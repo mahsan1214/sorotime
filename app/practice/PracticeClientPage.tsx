@@ -16,91 +16,148 @@ import {
 import { saveHistory } from "../../lib/history-storage";
 
 type InputMode = "handwriting" | "keypad";
+type RawQuestion = Record<string, any>;
 
-type HandwritingPadHandle = {
-  clear: () => void;
-};
+type QuestionViewModel =
+  | { kind: "sum"; numbers: number[]; answer?: number }
+  | { kind: "multiply"; left: number; right: number; answer?: number }
+  | { kind: "divide"; dividend: number; divisor: number; answer?: number }
+  | { kind: "text"; text: string; answer?: number }
+  | { kind: "unknown"; raw: RawQuestion; answer?: number };
 
-type NormalizedQuestion = {
-  answer: number;
-  displayText: string;
-  kind: "sum" | "multiply" | "divide" | "text";
-  numbers?: number[];
-  left?: number;
-  right?: number;
-  dividend?: number;
-  divisor?: number;
-};
+function toNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (
+    typeof value === "string" &&
+    value.trim() !== "" &&
+    !Number.isNaN(Number(value))
+  ) {
+    return Number(value);
+  }
+  return null;
+}
 
-function normalizeQuestion(raw: any): NormalizedQuestion | null {
-  if (!raw) return null;
+function getNumberArray(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
 
-  // 見取り算・暗算: numbers配列
-  if (Array.isArray(raw.numbers) && typeof raw.answer !== "undefined") {
+  const arr = value
+    .map((item) => toNumber(item))
+    .filter((item): item is number => item !== null);
+
+  return arr.length > 0 ? arr : null;
+}
+
+function getFirstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "") {
+      return value;
+    }
+  }
+  return null;
+}
+
+function getQuestionViewModel(
+  raw: unknown,
+  practiceType: string
+): QuestionViewModel | null {
+  if (!raw || typeof raw !== "object") return null;
+
+  const q = raw as RawQuestion;
+
+  const directText = getFirstString(
+    q.displayText,
+    q.questionText,
+    q.text,
+    q.question,
+    q.expression,
+    q.formula,
+    q.label,
+    q.prompt
+  );
+
+  if (directText) {
+    return {
+      kind: "text",
+      text: directText,
+      answer: toNumber(q.answer) ?? undefined,
+    };
+  }
+
+  const numberArray =
+    getNumberArray(q.numbers) ??
+    getNumberArray(q.values) ??
+    getNumberArray(q.items) ??
+    getNumberArray(q.addends) ??
+    getNumberArray(q.terms) ??
+    getNumberArray(q.list);
+
+  if (
+    (practiceType === "mitorizan" || practiceType === "anzan") &&
+    numberArray &&
+    numberArray.length >= 2
+  ) {
     return {
       kind: "sum",
-      numbers: raw.numbers.map((n: any) => Number(n)),
-      answer: Number(raw.answer),
-      displayText: raw.numbers.join(" + "),
+      numbers: numberArray,
+      answer: toNumber(q.answer) ?? undefined,
     };
   }
 
-  // かけ算
-  if (
-    typeof raw.left !== "undefined" &&
-    typeof raw.right !== "undefined" &&
-    typeof raw.answer !== "undefined"
-  ) {
+  const left =
+    toNumber(q.left) ??
+    toNumber(q.a) ??
+    toNumber(q.multiplicand) ??
+    toNumber(q.first);
+
+  const right =
+    toNumber(q.right) ??
+    toNumber(q.b) ??
+    toNumber(q.multiplier) ??
+    toNumber(q.second);
+
+  if (practiceType === "kakezan" && left !== null && right !== null) {
     return {
       kind: "multiply",
-      left: Number(raw.left),
-      right: Number(raw.right),
-      answer: Number(raw.answer),
-      displayText: `${raw.left} × ${raw.right}`,
+      left,
+      right,
+      answer: toNumber(q.answer) ?? undefined,
     };
   }
 
-  // わり算
-  if (
-    typeof raw.dividend !== "undefined" &&
-    typeof raw.divisor !== "undefined" &&
-    typeof raw.answer !== "undefined"
-  ) {
+  const dividend =
+    toNumber(q.dividend) ??
+    toNumber(q.left) ??
+    toNumber(q.value1) ??
+    toNumber(q.first);
+
+  const divisor =
+    toNumber(q.divisor) ??
+    toNumber(q.right) ??
+    toNumber(q.value2) ??
+    toNumber(q.second);
+
+  if (practiceType === "warizan" && dividend !== null && divisor !== null) {
     return {
       kind: "divide",
-      dividend: Number(raw.dividend),
-      divisor: Number(raw.divisor),
-      answer: Number(raw.answer),
-      displayText: `${raw.dividend} ÷ ${raw.divisor}`,
+      dividend,
+      divisor,
+      answer: toNumber(q.answer) ?? undefined,
     };
   }
 
-  // 文字列表示ベース
-  if (typeof raw.displayText === "string" && typeof raw.answer !== "undefined") {
+  if (numberArray && numberArray.length >= 2) {
     return {
-      kind: "text",
-      answer: Number(raw.answer),
-      displayText: raw.displayText,
+      kind: "sum",
+      numbers: numberArray,
+      answer: toNumber(q.answer) ?? undefined,
     };
   }
 
-  if (typeof raw.questionText === "string" && typeof raw.answer !== "undefined") {
-    return {
-      kind: "text",
-      answer: Number(raw.answer),
-      displayText: raw.questionText,
-    };
-  }
-
-  if (typeof raw.text === "string" && typeof raw.answer !== "undefined") {
-    return {
-      kind: "text",
-      answer: Number(raw.answer),
-      displayText: raw.text,
-    };
-  }
-
-  return null;
+  return {
+    kind: "unknown",
+    raw: q,
+    answer: toNumber(q.answer) ?? undefined,
+  };
 }
 
 export default function PracticeClientPage() {
@@ -114,7 +171,7 @@ export default function PracticeClientPage() {
 
   const config = useMemo(() => getPracticeConfig(level, type) as any, [level, type]);
 
-  const [questions, setQuestions] = useState<NormalizedQuestion[]>([]);
+  const [questions, setQuestions] = useState<RawQuestion[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [inputValue, setInputValue] = useState("");
   const [score, setScore] = useState(0);
@@ -126,10 +183,14 @@ export default function PracticeClientPage() {
   const [loadError, setLoadError] = useState("");
 
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const handwritingPadRef = useRef<HandwritingPadHandle | null>(null);
+  const handwritingPadRef = useRef<any>(null);
   const savedRef = useRef(false);
 
   const currentQuestion = questions[currentIndex] ?? null;
+  const currentView = useMemo(
+    () => getQuestionViewModel(currentQuestion, config.type),
+    [currentQuestion, config.type]
+  );
 
   const conditionText = useMemo(() => {
     if (!config) return "";
@@ -151,15 +212,12 @@ export default function PracticeClientPage() {
 
   useEffect(() => {
     try {
-      const rawQuestions = createQuestionSet(config) as any[];
-
-      const normalized = Array.isArray(rawQuestions)
-        ? rawQuestions
-            .map((q) => normalizeQuestion(q))
-            .filter((q): q is NormalizedQuestion => q !== null)
+      const rawQuestions = createQuestionSet(config) as unknown;
+      const safeQuestions = Array.isArray(rawQuestions)
+        ? (rawQuestions as RawQuestion[])
         : [];
 
-      setQuestions(normalized);
+      setQuestions(safeQuestions);
       setCurrentIndex(0);
       setInputValue("");
       setScore(0);
@@ -168,15 +226,16 @@ export default function PracticeClientPage() {
       setTimeLeft(config.time);
       setIsFinished(false);
       setInputMode("handwriting");
-      setLoadError("");
       savedRef.current = false;
 
-      if (normalized.length === 0) {
-        setLoadError("問題の生成に失敗しました");
+      if (safeQuestions.length === 0) {
+        setLoadError("問題が0件でした");
+      } else {
+        setLoadError("");
       }
 
       setTimeout(() => {
-        handwritingPadRef.current?.clear();
+        handwritingPadRef.current?.clear?.();
         inputRef.current?.focus();
       }, 0);
     } catch (error) {
@@ -216,8 +275,9 @@ export default function PracticeClientPage() {
 
     savedRef.current = true;
 
+    const totalCount = questions.length || config.count;
     const percentage =
-      config.count > 0 ? Math.round((score / config.count) * 100) : 0;
+      totalCount > 0 ? Math.round((score / totalCount) * 100) : 0;
 
     saveHistory({
       id: `${Date.now()}`,
@@ -226,7 +286,7 @@ export default function PracticeClientPage() {
       levelLabel: config.levelLabel,
       type: config.type,
       typeLabel: config.typeLabel,
-      count: config.count,
+      count: totalCount,
       timeLimit: config.time,
       remainingTime: timeLeft,
       correctCount: score,
@@ -243,27 +303,37 @@ export default function PracticeClientPage() {
 
   const clearInput = () => {
     setInputValue("");
-    handwritingPadRef.current?.clear();
+    handwritingPadRef.current?.clear?.();
     focusInput();
   };
 
   const appendDigit = (digit: string) => {
-    if (checked || isFinished || !currentQuestion) return;
+    if (checked || isFinished || !currentView || currentView.kind === "unknown") return;
     setInputValue((prev) => `${prev}${digit}`);
     focusInput();
   };
 
   const backspaceInput = () => {
-    if (checked || isFinished || !currentQuestion) return;
+    if (checked || isFinished || !currentView || currentView.kind === "unknown") return;
     setInputValue((prev) => prev.slice(0, -1));
     focusInput();
   };
 
   const handleCheck = () => {
-    if (!currentQuestion || checked || inputValue.trim() === "") return;
+    if (!currentQuestion || !currentView || checked || inputValue.trim() === "") return;
+    if (currentView.kind === "unknown") {
+      setLoadError("この問題形式では答えあわせできません");
+      return;
+    }
+
+    const expectedAnswer = currentView.answer;
+    if (typeof expectedAnswer === "undefined") {
+      setLoadError("答えデータが見つかりません");
+      return;
+    }
 
     const submittedAnswer = inputValue.trim();
-    const correct = Number(submittedAnswer) === Number(currentQuestion.answer);
+    const correct = Number(submittedAnswer) === Number(expectedAnswer);
 
     setChecked(true);
     setIsCorrect(correct);
@@ -273,12 +343,12 @@ export default function PracticeClientPage() {
     }
 
     setInputValue("");
-    handwritingPadRef.current?.clear();
+    handwritingPadRef.current?.clear?.();
     focusInput();
   };
 
   const handleNext = () => {
-    if (!currentQuestion) return;
+    if (!currentView) return;
 
     if (currentIndex >= questions.length - 1) {
       setIsFinished(true);
@@ -289,20 +359,18 @@ export default function PracticeClientPage() {
     setInputValue("");
     setChecked(false);
     setIsCorrect(false);
-    handwritingPadRef.current?.clear();
+    handwritingPadRef.current?.clear?.();
     focusInput();
   };
 
   const handleRestart = () => {
     try {
-      const rawQuestions = createQuestionSet(config) as any[];
-      const normalized = Array.isArray(rawQuestions)
-        ? rawQuestions
-            .map((q) => normalizeQuestion(q))
-            .filter((q): q is NormalizedQuestion => q !== null)
+      const rawQuestions = createQuestionSet(config) as unknown;
+      const safeQuestions = Array.isArray(rawQuestions)
+        ? (rawQuestions as RawQuestion[])
         : [];
 
-      setQuestions(normalized);
+      setQuestions(safeQuestions);
       setCurrentIndex(0);
       setInputValue("");
       setScore(0);
@@ -311,9 +379,9 @@ export default function PracticeClientPage() {
       setTimeLeft(config.time);
       setIsFinished(false);
       setInputMode("handwriting");
-      setLoadError(normalized.length === 0 ? "問題の生成に失敗しました" : "");
+      setLoadError(safeQuestions.length === 0 ? "問題が0件でした" : "");
       savedRef.current = false;
-      handwritingPadRef.current?.clear();
+      handwritingPadRef.current?.clear?.();
       focusInput();
     } catch (error) {
       console.error(error);
@@ -338,7 +406,7 @@ export default function PracticeClientPage() {
   const switchInputMode = (mode: InputMode) => {
     setInputMode(mode);
     setInputValue("");
-    handwritingPadRef.current?.clear();
+    handwritingPadRef.current?.clear?.();
     focusInput();
   };
 
@@ -359,14 +427,22 @@ export default function PracticeClientPage() {
       );
     }
 
-    if (currentQuestion.kind === "sum" && currentQuestion.numbers) {
+    if (!currentView) {
+      return (
+        <div className="mx-auto w-full max-w-md rounded-3xl bg-amber-50 p-6 text-center ring-1 ring-amber-100">
+          <div className="text-lg font-bold text-amber-700">問題データを確認中です</div>
+        </div>
+      );
+    }
+
+    if (currentView.kind === "sum") {
       return (
         <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 ring-1 ring-slate-200">
           <div className="mb-3 text-center text-sm font-bold text-slate-500">
             {config.typeLabel}
           </div>
           <div className="space-y-2 text-right font-mono text-4xl font-bold tracking-wide text-slate-900">
-            {currentQuestion.numbers.map((num, index) => (
+            {currentView.numbers.map((num, index) => (
               <div key={`${num}-${index}`}>
                 {index === 0 ? "" : "+"}
                 {num}
@@ -377,37 +453,29 @@ export default function PracticeClientPage() {
       );
     }
 
-    if (
-      currentQuestion.kind === "multiply" &&
-      typeof currentQuestion.left !== "undefined" &&
-      typeof currentQuestion.right !== "undefined"
-    ) {
+    if (currentView.kind === "multiply") {
       return (
         <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 ring-1 ring-slate-200">
           <div className="mb-3 text-center text-sm font-bold text-slate-500">
             {config.typeLabel}
           </div>
           <div className="space-y-2 text-right font-mono text-4xl font-bold tracking-wide text-slate-900">
-            <div>{currentQuestion.left}</div>
-            <div>× {currentQuestion.right}</div>
+            <div>{currentView.left}</div>
+            <div>× {currentView.right}</div>
             <div className="border-t-4 border-slate-300 pt-3">？</div>
           </div>
         </div>
       );
     }
 
-    if (
-      currentQuestion.kind === "divide" &&
-      typeof currentQuestion.dividend !== "undefined" &&
-      typeof currentQuestion.divisor !== "undefined"
-    ) {
+    if (currentView.kind === "divide") {
       return (
         <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 ring-1 ring-slate-200">
           <div className="mb-3 text-center text-sm font-bold text-slate-500">
             {config.typeLabel}
           </div>
           <div className="text-center font-mono text-4xl font-bold tracking-wide text-slate-900">
-            {currentQuestion.dividend} ÷ {currentQuestion.divisor}
+            {currentView.dividend} ÷ {currentView.divisor}
           </div>
           <div className="mt-4 text-center text-lg font-bold text-slate-500">
             答えを書こう
@@ -416,19 +484,34 @@ export default function PracticeClientPage() {
       );
     }
 
-    return (
-      <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 text-center ring-1 ring-slate-200">
-        <div className="mb-3 text-sm font-bold text-slate-500">{config.typeLabel}</div>
-        <div className="font-mono text-4xl font-bold tracking-wide text-slate-900">
-          {currentQuestion.displayText}
+    if (currentView.kind === "text") {
+      return (
+        <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 text-center ring-1 ring-slate-200">
+          <div className="mb-3 text-sm font-bold text-slate-500">{config.typeLabel}</div>
+          <div className="font-mono text-4xl font-bold tracking-wide text-slate-900 whitespace-pre-line">
+            {currentView.text}
+          </div>
         </div>
+      );
+    }
+
+    return (
+      <div className="mx-auto w-full max-w-md rounded-3xl bg-amber-50 p-6 text-center ring-1 ring-amber-100">
+        <div className="mb-2 text-sm font-bold text-amber-700">{config.typeLabel}</div>
+        <div className="text-lg font-bold text-amber-800">
+          この問題形式は未対応です
+        </div>
+        <pre className="mt-4 overflow-auto rounded-2xl bg-white p-4 text-left text-xs text-slate-600 ring-1 ring-slate-200">
+{JSON.stringify(currentQuestion, null, 2)}
+        </pre>
       </div>
     );
   };
 
   if (isFinished) {
+    const totalCount = questions.length || config.count;
     const percentage =
-      config.count > 0 ? Math.round((score / config.count) * 100) : 0;
+      totalCount > 0 ? Math.round((score / totalCount) * 100) : 0;
 
     return (
       <main className="min-h-screen bg-gradient-to-b from-orange-50 to-white px-4 py-6 text-slate-800 sm:px-6 sm:py-8">
@@ -451,7 +534,7 @@ export default function PracticeClientPage() {
               <div className="rounded-3xl bg-orange-50 p-5 text-center ring-1 ring-orange-100">
                 <div className="text-sm font-bold text-orange-700">正解</div>
                 <div className="mt-2 text-3xl font-extrabold text-orange-600">
-                  {score} / {questions.length || config.count}
+                  {score} / {totalCount}
                 </div>
               </div>
 
@@ -532,7 +615,11 @@ export default function PracticeClientPage() {
             <div
               className="h-full rounded-full bg-orange-400 transition-all"
               style={{
-                width: `${questions.length > 0 ? ((currentIndex + 1) / questions.length) * 100 : 0}%`,
+                width: `${
+                  questions.length > 0
+                    ? ((currentIndex + 1) / questions.length) * 100
+                    : 0
+                }%`,
               }}
             />
           </div>
@@ -587,7 +674,7 @@ export default function PracticeClientPage() {
                 onKeyDown={handleEnterSubmit}
                 className="w-full rounded-2xl border-2 border-orange-200 bg-white px-5 py-4 text-center text-3xl font-bold tracking-widest text-slate-900 outline-none transition focus:border-orange-400"
                 placeholder="ここに答え"
-                disabled={!currentQuestion}
+                disabled={!currentView || currentView.kind === "unknown"}
               />
             </div>
 
@@ -644,7 +731,7 @@ export default function PracticeClientPage() {
                 <button
                   type="button"
                   onClick={handleCheck}
-                  disabled={!currentQuestion}
+                  disabled={!currentView || currentView.kind === "unknown"}
                   className="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-xl font-extrabold text-white shadow-sm transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
                   答えあわせ
@@ -660,7 +747,7 @@ export default function PracticeClientPage() {
               )}
             </div>
 
-            {checked && currentQuestion && (
+            {checked && currentView && currentView.kind !== "unknown" && (
               <div
                 className={`mx-auto mt-6 max-w-md rounded-3xl p-5 text-center ring-1 ${
                   isCorrect
@@ -672,7 +759,7 @@ export default function PracticeClientPage() {
                   {isCorrect ? "せいかい！" : "おしい！"}
                 </div>
                 <div className="mt-2 text-lg font-bold">
-                  正しい答え: {currentQuestion.answer}
+                  正しい答え: {currentView.answer}
                 </div>
               </div>
             )}
