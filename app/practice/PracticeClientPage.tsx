@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import HandwritingPad from "../../components/HandwritingPad";
 import {
   DEFAULT_LEVEL,
   DEFAULT_TYPE,
@@ -15,7 +14,6 @@ import {
 } from "../../lib/practice-config";
 import { saveHistory } from "../../lib/history-storage";
 
-type InputMode = "handwriting" | "keypad";
 type RawQuestion = Record<string, any>;
 
 type QuestionViewModel =
@@ -61,6 +59,16 @@ function getFirstString(...values: unknown[]): string | null {
   return null;
 }
 
+function sanitizeTime(value: string | null, fallback: number): number {
+  if (!value) return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const intValue = Math.floor(n);
+  if (intValue < 10) return 10;
+  if (intValue > 600) return 600;
+  return intValue;
+}
+
 function getQuestionViewModel(
   raw: unknown,
   practiceType: string
@@ -68,7 +76,6 @@ function getQuestionViewModel(
   if (!raw || typeof raw !== "object") return null;
 
   const q = raw as RawQuestion;
-
   const answer = toNumber(q.answer) ?? undefined;
   const layout = typeof q.layout === "string" ? q.layout : "";
 
@@ -81,7 +88,6 @@ function getQuestionViewModel(
     getStringArray(q.terms) ??
     getStringArray(q.list);
 
-  // 1. 見取り算・暗算
   if (
     (layout === "sum" || practiceType === "mitorizan" || practiceType === "anzan") &&
     lines &&
@@ -94,8 +100,7 @@ function getQuestionViewModel(
     };
   }
 
-  // 2. かけ算: layout=multiply + lines[0], lines[1] に対応
-  if ((layout === "multiply" || practiceType === "kakezan")) {
+  if (layout === "multiply" || practiceType === "kakezan") {
     if (lines && lines.length >= 2) {
       return {
         kind: "multiply",
@@ -120,7 +125,6 @@ function getQuestionViewModel(
     }
   }
 
-  // 3. わり算: layout=divide / division + lines[0], lines[1] に対応
   if (
     layout === "divide" ||
     layout === "division" ||
@@ -150,7 +154,6 @@ function getQuestionViewModel(
     }
   }
 
-  // 4. 文字列ベース
   const directText = getFirstString(
     q.displayText,
     q.questionText,
@@ -182,11 +185,23 @@ export default function PracticeClientPage() {
 
   const levelParam = searchParams.get("level");
   const typeParam = searchParams.get("type");
+  const timeParam = searchParams.get("time");
 
   const level = isLevelKey(levelParam) ? levelParam : DEFAULT_LEVEL;
   const type = isPracticeType(typeParam) ? typeParam : DEFAULT_TYPE;
 
-  const config = useMemo(() => getPracticeConfig(level, type) as any, [level, type]);
+  const baseConfig = useMemo(() => getPracticeConfig(level, type) as any, [level, type]);
+  const customTime = useMemo(
+    () => sanitizeTime(timeParam, baseConfig.time),
+    [timeParam, baseConfig.time]
+  );
+  const config = useMemo(
+    () => ({
+      ...baseConfig,
+      time: customTime,
+    }),
+    [baseConfig, customTime]
+  );
 
   const [questions, setQuestions] = useState<RawQuestion[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -196,11 +211,10 @@ export default function PracticeClientPage() {
   const [isCorrect, setIsCorrect] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number>(config.time);
   const [isFinished, setIsFinished] = useState(false);
-  const [inputMode, setInputMode] = useState<InputMode>("handwriting");
   const [loadError, setLoadError] = useState("");
+  const [isTimerPaused, setIsTimerPaused] = useState(false);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const handwritingPadRef = useRef<any>(null);
   const savedRef = useRef(false);
 
   const currentQuestion = questions[currentIndex] ?? null;
@@ -242,17 +256,15 @@ export default function PracticeClientPage() {
       setIsCorrect(false);
       setTimeLeft(config.time);
       setIsFinished(false);
-      setInputMode("handwriting");
+      setLoadError("");
+      setIsTimerPaused(false);
       savedRef.current = false;
 
       if (safeQuestions.length === 0) {
         setLoadError("問題が0件でした");
-      } else {
-        setLoadError("");
       }
 
       setTimeout(() => {
-        handwritingPadRef.current?.clear?.();
         inputRef.current?.focus();
       }, 0);
     } catch (error) {
@@ -265,8 +277,8 @@ export default function PracticeClientPage() {
       setIsCorrect(false);
       setTimeLeft(config.time);
       setIsFinished(false);
-      setInputMode("handwriting");
       setLoadError("問題の読み込みに失敗しました");
+      setIsTimerPaused(false);
       savedRef.current = false;
     }
   }, [config]);
@@ -274,6 +286,8 @@ export default function PracticeClientPage() {
   useEffect(() => {
     if (isFinished) return;
     if (questions.length === 0) return;
+    if (isTimerPaused) return;
+    if (checked) return;
 
     if (timeLeft <= 0) {
       setIsFinished(true);
@@ -285,7 +299,7 @@ export default function PracticeClientPage() {
     }, 1000);
 
     return () => window.clearTimeout(timer);
-  }, [timeLeft, isFinished, questions.length]);
+  }, [timeLeft, isFinished, questions.length, isTimerPaused, checked]);
 
   useEffect(() => {
     if (!isFinished || savedRef.current || questions.length === 0) return;
@@ -320,13 +334,13 @@ export default function PracticeClientPage() {
 
   const clearInput = () => {
     setInputValue("");
-    handwritingPadRef.current?.clear?.();
     focusInput();
   };
 
   const appendDigit = (digit: string) => {
     if (checked || isFinished || !currentView || currentView.kind === "unknown") return;
     setInputValue((prev) => `${prev}${digit}`);
+    setIsTimerPaused(true);
     focusInput();
   };
 
@@ -360,7 +374,6 @@ export default function PracticeClientPage() {
     }
 
     setInputValue("");
-    handwritingPadRef.current?.clear?.();
     focusInput();
   };
 
@@ -376,7 +389,7 @@ export default function PracticeClientPage() {
     setInputValue("");
     setChecked(false);
     setIsCorrect(false);
-    handwritingPadRef.current?.clear?.();
+    setIsTimerPaused(false);
     focusInput();
   };
 
@@ -395,10 +408,9 @@ export default function PracticeClientPage() {
       setIsCorrect(false);
       setTimeLeft(config.time);
       setIsFinished(false);
-      setInputMode("handwriting");
       setLoadError(safeQuestions.length === 0 ? "問題が0件でした" : "");
+      setIsTimerPaused(false);
       savedRef.current = false;
-      handwritingPadRef.current?.clear?.();
       focusInput();
     } catch (error) {
       console.error(error);
@@ -407,24 +419,11 @@ export default function PracticeClientPage() {
     }
   };
 
-  const handleRecognized = (text: string) => {
-    const cleaned = (text || "").replace(/[^0-9]/g, "");
-    setInputValue(cleaned);
-    focusInput();
-  };
-
   const handleEnterSubmit = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
       event.preventDefault();
       handleCheck();
     }
-  };
-
-  const switchInputMode = (mode: InputMode) => {
-    setInputMode(mode);
-    setInputValue("");
-    handwritingPadRef.current?.clear?.();
-    focusInput();
   };
 
   const renderQuestionBody = () => {
@@ -472,14 +471,15 @@ export default function PracticeClientPage() {
 
     if (currentView.kind === "multiply") {
       return (
-        <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 ring-1 ring-slate-200">
+        <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 text-center ring-1 ring-slate-200">
           <div className="mb-3 text-center text-sm font-bold text-slate-500">
             {config.typeLabel}
           </div>
-          <div className="space-y-2 text-right font-mono text-4xl font-bold tracking-wide text-slate-900">
-            <div>{currentView.left}</div>
-            <div>× {currentView.right}</div>
-            <div className="border-t-4 border-slate-300 pt-3">？</div>
+          <div className="font-mono text-4xl font-bold tracking-wide text-slate-900">
+            {currentView.left} × {currentView.right}
+          </div>
+          <div className="mt-4 text-center text-lg font-bold text-slate-500">
+            答えを書こう
           </div>
         </div>
       );
@@ -487,11 +487,11 @@ export default function PracticeClientPage() {
 
     if (currentView.kind === "divide") {
       return (
-        <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 ring-1 ring-slate-200">
+        <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 text-center ring-1 ring-slate-200">
           <div className="mb-3 text-center text-sm font-bold text-slate-500">
             {config.typeLabel}
           </div>
-          <div className="text-center font-mono text-4xl font-bold tracking-wide text-slate-900">
+          <div className="font-mono text-4xl font-bold tracking-wide text-slate-900">
             {currentView.dividend} ÷ {currentView.divisor}
           </div>
           <div className="mt-4 text-center text-lg font-bold text-slate-500">
@@ -644,32 +644,6 @@ export default function PracticeClientPage() {
           <div className="mt-8">{renderQuestionBody()}</div>
 
           <div className="mt-8 rounded-3xl bg-slate-50 p-4 ring-1 ring-slate-200 sm:p-6">
-            <div className="mb-4 flex flex-wrap justify-center gap-3">
-              <button
-                type="button"
-                onClick={() => switchInputMode("handwriting")}
-                className={`rounded-2xl px-4 py-3 text-sm font-bold transition sm:text-base ${
-                  inputMode === "handwriting"
-                    ? "bg-orange-500 text-white shadow-sm"
-                    : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
-                }`}
-              >
-                手書き入力
-              </button>
-
-              <button
-                type="button"
-                onClick={() => switchInputMode("keypad")}
-                className={`rounded-2xl px-4 py-3 text-sm font-bold transition sm:text-base ${
-                  inputMode === "keypad"
-                    ? "bg-orange-500 text-white shadow-sm"
-                    : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
-                }`}
-              >
-                数字ボタン入力
-              </button>
-            </div>
-
             <div className="mx-auto max-w-md">
               <label
                 htmlFor="answer"
@@ -685,9 +659,13 @@ export default function PracticeClientPage() {
                 inputMode="numeric"
                 pattern="[0-9]*"
                 value={inputValue}
-                onChange={(e) =>
-                  setInputValue(e.target.value.replace(/[^0-9]/g, ""))
-                }
+                onChange={(e) => {
+                  const nextValue = e.target.value.replace(/[^0-9]/g, "");
+                  setInputValue(nextValue);
+                  if (nextValue !== "") {
+                    setIsTimerPaused(true);
+                  }
+                }}
                 onKeyDown={handleEnterSubmit}
                 className="w-full rounded-2xl border-2 border-orange-200 bg-white px-5 py-4 text-center text-3xl font-bold tracking-widest text-slate-900 outline-none transition focus:border-orange-400"
                 placeholder="ここに答え"
@@ -695,53 +673,44 @@ export default function PracticeClientPage() {
               />
             </div>
 
-            {inputMode === "handwriting" ? (
-              <div className="mt-6">
-                <HandwritingPad
-                  ref={handwritingPadRef}
-                  onRecognized={handleRecognized}
-                />
-              </div>
-            ) : (
-              <div className="mx-auto mt-6 max-w-md">
-                <div className="grid grid-cols-3 gap-3">
-                  {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((digit) => (
-                    <button
-                      key={digit}
-                      type="button"
-                      onClick={() => appendDigit(digit)}
-                      className="rounded-2xl bg-white px-4 py-4 text-2xl font-extrabold text-slate-800 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
-                    >
-                      {digit}
-                    </button>
-                  ))}
-
+            <div className="mx-auto mt-6 max-w-md">
+              <div className="grid grid-cols-3 gap-3">
+                {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((digit) => (
                   <button
+                    key={digit}
                     type="button"
-                    onClick={clearInput}
-                    className="rounded-2xl bg-rose-50 px-4 py-4 text-lg font-bold text-rose-600 ring-1 ring-rose-100 transition hover:bg-rose-100"
-                  >
-                    けす
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => appendDigit("0")}
+                    onClick={() => appendDigit(digit)}
                     className="rounded-2xl bg-white px-4 py-4 text-2xl font-extrabold text-slate-800 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
                   >
-                    0
+                    {digit}
                   </button>
+                ))}
 
-                  <button
-                    type="button"
-                    onClick={backspaceInput}
-                    className="rounded-2xl bg-sky-50 px-4 py-4 text-lg font-bold text-sky-600 ring-1 ring-sky-100 transition hover:bg-sky-100"
-                  >
-                    1字けす
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={clearInput}
+                  className="rounded-2xl bg-rose-50 px-4 py-4 text-lg font-bold text-rose-600 ring-1 ring-rose-100 transition hover:bg-rose-100"
+                >
+                  けす
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => appendDigit("0")}
+                  className="rounded-2xl bg-white px-4 py-4 text-2xl font-extrabold text-slate-800 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
+                >
+                  0
+                </button>
+
+                <button
+                  type="button"
+                  onClick={backspaceInput}
+                  className="rounded-2xl bg-sky-50 px-4 py-4 text-lg font-bold text-sky-600 ring-1 ring-sky-100 transition hover:bg-sky-100"
+                >
+                  1字けす
+                </button>
               </div>
-            )}
+            </div>
 
             <div className="mx-auto mt-6 max-w-md">
               {!checked ? (
@@ -778,6 +747,12 @@ export default function PracticeClientPage() {
                 <div className="mt-2 text-lg font-bold">
                   正しい答え: {currentView.answer}
                 </div>
+              </div>
+            )}
+
+            {isTimerPaused && !checked && (
+              <div className="mx-auto mt-4 max-w-md rounded-2xl bg-sky-50 px-4 py-3 text-center text-sm font-bold text-sky-700 ring-1 ring-sky-100">
+                回答入力中のため時間を停止しています
               </div>
             )}
           </div>
