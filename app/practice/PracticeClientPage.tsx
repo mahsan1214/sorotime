@@ -16,9 +16,92 @@ import {
 import { saveHistory } from "../../lib/history-storage";
 
 type InputMode = "handwriting" | "keypad";
+
 type HandwritingPadHandle = {
   clear: () => void;
 };
+
+type NormalizedQuestion = {
+  answer: number;
+  displayText: string;
+  kind: "sum" | "multiply" | "divide" | "text";
+  numbers?: number[];
+  left?: number;
+  right?: number;
+  dividend?: number;
+  divisor?: number;
+};
+
+function normalizeQuestion(raw: any): NormalizedQuestion | null {
+  if (!raw) return null;
+
+  // 見取り算・暗算: numbers配列
+  if (Array.isArray(raw.numbers) && typeof raw.answer !== "undefined") {
+    return {
+      kind: "sum",
+      numbers: raw.numbers.map((n: any) => Number(n)),
+      answer: Number(raw.answer),
+      displayText: raw.numbers.join(" + "),
+    };
+  }
+
+  // かけ算
+  if (
+    typeof raw.left !== "undefined" &&
+    typeof raw.right !== "undefined" &&
+    typeof raw.answer !== "undefined"
+  ) {
+    return {
+      kind: "multiply",
+      left: Number(raw.left),
+      right: Number(raw.right),
+      answer: Number(raw.answer),
+      displayText: `${raw.left} × ${raw.right}`,
+    };
+  }
+
+  // わり算
+  if (
+    typeof raw.dividend !== "undefined" &&
+    typeof raw.divisor !== "undefined" &&
+    typeof raw.answer !== "undefined"
+  ) {
+    return {
+      kind: "divide",
+      dividend: Number(raw.dividend),
+      divisor: Number(raw.divisor),
+      answer: Number(raw.answer),
+      displayText: `${raw.dividend} ÷ ${raw.divisor}`,
+    };
+  }
+
+  // 文字列表示ベース
+  if (typeof raw.displayText === "string" && typeof raw.answer !== "undefined") {
+    return {
+      kind: "text",
+      answer: Number(raw.answer),
+      displayText: raw.displayText,
+    };
+  }
+
+  if (typeof raw.questionText === "string" && typeof raw.answer !== "undefined") {
+    return {
+      kind: "text",
+      answer: Number(raw.answer),
+      displayText: raw.questionText,
+    };
+  }
+
+  if (typeof raw.text === "string" && typeof raw.answer !== "undefined") {
+    return {
+      kind: "text",
+      answer: Number(raw.answer),
+      displayText: raw.text,
+    };
+  }
+
+  return null;
+}
 
 export default function PracticeClientPage() {
   const searchParams = useSearchParams();
@@ -31,7 +114,7 @@ export default function PracticeClientPage() {
 
   const config = useMemo(() => getPracticeConfig(level, type) as any, [level, type]);
 
-  const [questions, setQuestions] = useState<any[]>([]);
+  const [questions, setQuestions] = useState<NormalizedQuestion[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [inputValue, setInputValue] = useState("");
   const [score, setScore] = useState(0);
@@ -40,58 +123,81 @@ export default function PracticeClientPage() {
   const [timeLeft, setTimeLeft] = useState<number>(config.time);
   const [isFinished, setIsFinished] = useState(false);
   const [inputMode, setInputMode] = useState<InputMode>("handwriting");
+  const [loadError, setLoadError] = useState("");
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const handwritingPadRef = useRef<HandwritingPadHandle | null>(null);
   const savedRef = useRef(false);
 
-  const currentQuestion = questions[currentIndex];
+  const currentQuestion = questions[currentIndex] ?? null;
 
   const conditionText = useMemo(() => {
     if (!config) return "";
 
     if (config.type === "mitorizan" || config.type === "anzan") {
-      const digits = config.digits ?? 0;
-      const linesCount = config.linesCount ?? 0;
-      return `${digits}けた ${linesCount}口 / ${config.count}問 / ${config.time}秒`;
+      return `${config.digits ?? 0}けた ${config.linesCount ?? 0}口 / ${config.count}問 / ${config.time}秒`;
     }
 
     if (config.type === "kakezan") {
-      const leftDigits = config.leftDigits ?? 0;
-      const rightDigits = config.rightDigits ?? 0;
-      return `${leftDigits}けた × ${rightDigits}けた / ${config.count}問 / ${config.time}秒`;
+      return `${config.leftDigits ?? 0}けた × ${config.rightDigits ?? 0}けた / ${config.count}問 / ${config.time}秒`;
     }
 
     if (config.type === "warizan") {
-      const divisorDigits = config.divisorDigits ?? 0;
-      const quotientDigits = config.quotientDigits ?? 0;
-      return `${divisorDigits}けたでわる / 商 ${quotientDigits}けた / ${config.count}問 / ${config.time}秒`;
+      return `${config.divisorDigits ?? 0}けたでわる / 商 ${config.quotientDigits ?? 0}けた / ${config.count}問 / ${config.time}秒`;
     }
 
     return `${config.count}問 / ${config.time}秒`;
   }, [config]);
 
   useEffect(() => {
-    const nextQuestions = createQuestionSet(config) as any[];
-    setQuestions(nextQuestions);
-    setCurrentIndex(0);
-    setInputValue("");
-    setScore(0);
-    setChecked(false);
-    setIsCorrect(false);
-    setTimeLeft(config.time);
-    setIsFinished(false);
-    setInputMode("handwriting");
-    savedRef.current = false;
+    try {
+      const rawQuestions = createQuestionSet(config) as any[];
 
-    setTimeout(() => {
-      handwritingPadRef.current?.clear();
-      inputRef.current?.focus();
-    }, 0);
+      const normalized = Array.isArray(rawQuestions)
+        ? rawQuestions
+            .map((q) => normalizeQuestion(q))
+            .filter((q): q is NormalizedQuestion => q !== null)
+        : [];
+
+      setQuestions(normalized);
+      setCurrentIndex(0);
+      setInputValue("");
+      setScore(0);
+      setChecked(false);
+      setIsCorrect(false);
+      setTimeLeft(config.time);
+      setIsFinished(false);
+      setInputMode("handwriting");
+      setLoadError("");
+      savedRef.current = false;
+
+      if (normalized.length === 0) {
+        setLoadError("問題の生成に失敗しました");
+      }
+
+      setTimeout(() => {
+        handwritingPadRef.current?.clear();
+        inputRef.current?.focus();
+      }, 0);
+    } catch (error) {
+      console.error(error);
+      setQuestions([]);
+      setCurrentIndex(0);
+      setInputValue("");
+      setScore(0);
+      setChecked(false);
+      setIsCorrect(false);
+      setTimeLeft(config.time);
+      setIsFinished(false);
+      setInputMode("handwriting");
+      setLoadError("問題の読み込みに失敗しました");
+      savedRef.current = false;
+    }
   }, [config]);
 
   useEffect(() => {
     if (isFinished) return;
+    if (questions.length === 0) return;
 
     if (timeLeft <= 0) {
       setIsFinished(true);
@@ -103,10 +209,10 @@ export default function PracticeClientPage() {
     }, 1000);
 
     return () => window.clearTimeout(timer);
-  }, [timeLeft, isFinished]);
+  }, [timeLeft, isFinished, questions.length]);
 
   useEffect(() => {
-    if (!isFinished || savedRef.current) return;
+    if (!isFinished || savedRef.current || questions.length === 0) return;
 
     savedRef.current = true;
 
@@ -127,7 +233,7 @@ export default function PracticeClientPage() {
       percentage,
       conditionText,
     });
-  }, [isFinished, score, config, timeLeft, conditionText]);
+  }, [isFinished, score, config, timeLeft, conditionText, questions.length]);
 
   const focusInput = () => {
     setTimeout(() => {
@@ -142,13 +248,13 @@ export default function PracticeClientPage() {
   };
 
   const appendDigit = (digit: string) => {
-    if (checked || isFinished) return;
+    if (checked || isFinished || !currentQuestion) return;
     setInputValue((prev) => `${prev}${digit}`);
     focusInput();
   };
 
   const backspaceInput = () => {
-    if (checked || isFinished) return;
+    if (checked || isFinished || !currentQuestion) return;
     setInputValue((prev) => prev.slice(0, -1));
     focusInput();
   };
@@ -172,7 +278,9 @@ export default function PracticeClientPage() {
   };
 
   const handleNext = () => {
-    if (currentIndex >= config.count - 1) {
+    if (!currentQuestion) return;
+
+    if (currentIndex >= questions.length - 1) {
       setIsFinished(true);
       return;
     }
@@ -186,19 +294,32 @@ export default function PracticeClientPage() {
   };
 
   const handleRestart = () => {
-    const nextQuestions = createQuestionSet(config) as any[];
-    setQuestions(nextQuestions);
-    setCurrentIndex(0);
-    setInputValue("");
-    setScore(0);
-    setChecked(false);
-    setIsCorrect(false);
-    setTimeLeft(config.time);
-    setIsFinished(false);
-    setInputMode("handwriting");
-    savedRef.current = false;
-    handwritingPadRef.current?.clear();
-    focusInput();
+    try {
+      const rawQuestions = createQuestionSet(config) as any[];
+      const normalized = Array.isArray(rawQuestions)
+        ? rawQuestions
+            .map((q) => normalizeQuestion(q))
+            .filter((q): q is NormalizedQuestion => q !== null)
+        : [];
+
+      setQuestions(normalized);
+      setCurrentIndex(0);
+      setInputValue("");
+      setScore(0);
+      setChecked(false);
+      setIsCorrect(false);
+      setTimeLeft(config.time);
+      setIsFinished(false);
+      setInputMode("handwriting");
+      setLoadError(normalized.length === 0 ? "問題の生成に失敗しました" : "");
+      savedRef.current = false;
+      handwritingPadRef.current?.clear();
+      focusInput();
+    } catch (error) {
+      console.error(error);
+      setQuestions([]);
+      setLoadError("問題の読み込みに失敗しました");
+    }
   };
 
   const handleRecognized = (text: string) => {
@@ -222,16 +343,30 @@ export default function PracticeClientPage() {
   };
 
   const renderQuestionBody = () => {
-    if (!currentQuestion) return null;
+    if (loadError) {
+      return (
+        <div className="mx-auto w-full max-w-md rounded-3xl bg-rose-50 p-6 text-center ring-1 ring-rose-100">
+          <div className="text-lg font-bold text-rose-700">{loadError}</div>
+        </div>
+      );
+    }
 
-    if (currentQuestion.numbers && Array.isArray(currentQuestion.numbers)) {
+    if (!currentQuestion) {
+      return (
+        <div className="mx-auto w-full max-w-md rounded-3xl bg-amber-50 p-6 text-center ring-1 ring-amber-100">
+          <div className="text-lg font-bold text-amber-700">問題を準備中です</div>
+        </div>
+      );
+    }
+
+    if (currentQuestion.kind === "sum" && currentQuestion.numbers) {
       return (
         <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 ring-1 ring-slate-200">
           <div className="mb-3 text-center text-sm font-bold text-slate-500">
             {config.typeLabel}
           </div>
           <div className="space-y-2 text-right font-mono text-4xl font-bold tracking-wide text-slate-900">
-            {currentQuestion.numbers.map((num: number, index: number) => (
+            {currentQuestion.numbers.map((num, index) => (
               <div key={`${num}-${index}`}>
                 {index === 0 ? "" : "+"}
                 {num}
@@ -243,6 +378,7 @@ export default function PracticeClientPage() {
     }
 
     if (
+      currentQuestion.kind === "multiply" &&
       typeof currentQuestion.left !== "undefined" &&
       typeof currentQuestion.right !== "undefined"
     ) {
@@ -261,6 +397,7 @@ export default function PracticeClientPage() {
     }
 
     if (
+      currentQuestion.kind === "divide" &&
       typeof currentQuestion.dividend !== "undefined" &&
       typeof currentQuestion.divisor !== "undefined"
     ) {
@@ -283,7 +420,7 @@ export default function PracticeClientPage() {
       <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 text-center ring-1 ring-slate-200">
         <div className="mb-3 text-sm font-bold text-slate-500">{config.typeLabel}</div>
         <div className="font-mono text-4xl font-bold tracking-wide text-slate-900">
-          {currentQuestion.displayText ?? "問題"}
+          {currentQuestion.displayText}
         </div>
       </div>
     );
@@ -314,7 +451,7 @@ export default function PracticeClientPage() {
               <div className="rounded-3xl bg-orange-50 p-5 text-center ring-1 ring-orange-100">
                 <div className="text-sm font-bold text-orange-700">正解</div>
                 <div className="mt-2 text-3xl font-extrabold text-orange-600">
-                  {score} / {config.count}
+                  {score} / {questions.length || config.count}
                 </div>
               </div>
 
@@ -387,7 +524,7 @@ export default function PracticeClientPage() {
               {conditionText}
             </p>
             <p className="mt-4 text-base font-bold text-slate-700 sm:text-lg">
-              第{currentIndex + 1}問 / 全{config.count}問
+              第{Math.min(currentIndex + 1, Math.max(questions.length, 1))}問 / 全{questions.length || config.count}問
             </p>
           </div>
 
@@ -395,7 +532,7 @@ export default function PracticeClientPage() {
             <div
               className="h-full rounded-full bg-orange-400 transition-all"
               style={{
-                width: `${((currentIndex + 1) / config.count) * 100}%`,
+                width: `${questions.length > 0 ? ((currentIndex + 1) / questions.length) * 100 : 0}%`,
               }}
             />
           </div>
@@ -450,6 +587,7 @@ export default function PracticeClientPage() {
                 onKeyDown={handleEnterSubmit}
                 className="w-full rounded-2xl border-2 border-orange-200 bg-white px-5 py-4 text-center text-3xl font-bold tracking-widest text-slate-900 outline-none transition focus:border-orange-400"
                 placeholder="ここに答え"
+                disabled={!currentQuestion}
               />
             </div>
 
@@ -506,7 +644,8 @@ export default function PracticeClientPage() {
                 <button
                   type="button"
                   onClick={handleCheck}
-                  className="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-xl font-extrabold text-white shadow-sm transition hover:bg-emerald-600"
+                  disabled={!currentQuestion}
+                  className="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-xl font-extrabold text-white shadow-sm transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
                   答えあわせ
                 </button>
@@ -516,12 +655,12 @@ export default function PracticeClientPage() {
                   onClick={handleNext}
                   className="w-full rounded-2xl bg-orange-500 px-5 py-4 text-xl font-extrabold text-white shadow-sm transition hover:bg-orange-600"
                 >
-                  {currentIndex >= config.count - 1 ? "結果を見る" : "次の問題へ"}
+                  {currentIndex >= questions.length - 1 ? "結果を見る" : "次の問題へ"}
                 </button>
               )}
             </div>
 
-            {checked && (
+            {checked && currentQuestion && (
               <div
                 className={`mx-auto mt-6 max-w-md rounded-3xl p-5 text-center ring-1 ${
                   isCorrect
@@ -533,7 +672,7 @@ export default function PracticeClientPage() {
                   {isCorrect ? "せいかい！" : "おしい！"}
                 </div>
                 <div className="mt-2 text-lg font-bold">
-                  正しい答え: {currentQuestion?.answer}
+                  正しい答え: {currentQuestion.answer}
                 </div>
               </div>
             )}
@@ -550,7 +689,7 @@ export default function PracticeClientPage() {
             <div className="rounded-2xl bg-sky-50 p-4 text-center ring-1 ring-sky-100">
               <div className="text-sm font-bold text-sky-700">今の問題</div>
               <div className="mt-1 text-2xl font-extrabold text-sky-600">
-                {currentIndex + 1}
+                {Math.min(currentIndex + 1, Math.max(questions.length, 1))}
               </div>
             </div>
 
