@@ -19,9 +19,9 @@ type InputMode = "handwriting" | "keypad";
 type RawQuestion = Record<string, any>;
 
 type QuestionViewModel =
-  | { kind: "sum"; numbers: number[]; answer?: number }
-  | { kind: "multiply"; left: number; right: number; answer?: number }
-  | { kind: "divide"; dividend: number; divisor: number; answer?: number }
+  | { kind: "sum"; lines: string[]; answer?: number }
+  | { kind: "multiply"; left: string; right: string; answer?: number }
+  | { kind: "divide"; dividend: string; divisor: string; answer?: number }
   | { kind: "text"; text: string; answer?: number }
   | { kind: "unknown"; raw: RawQuestion; answer?: number };
 
@@ -37,21 +37,26 @@ function toNumber(value: unknown): number | null {
   return null;
 }
 
-function getNumberArray(value: unknown): number[] | null {
+function toDisplayString(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string" && value.trim() !== "") return value.trim();
+  return null;
+}
+
+function getStringArray(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null;
 
   const arr = value
-    .map((item) => toNumber(item))
-    .filter((item): item is number => item !== null);
+    .map((item) => toDisplayString(item))
+    .filter((item): item is string => item !== null);
 
   return arr.length > 0 ? arr : null;
 }
 
 function getFirstString(...values: unknown[]): string | null {
   for (const value of values) {
-    if (typeof value === "string" && value.trim() !== "") {
-      return value;
-    }
+    const s = toDisplayString(value);
+    if (s !== null) return s;
   }
   return null;
 }
@@ -64,6 +69,58 @@ function getQuestionViewModel(
 
   const q = raw as RawQuestion;
 
+  const answer = toNumber(q.answer) ?? undefined;
+  const layout = typeof q.layout === "string" ? q.layout : "";
+
+  // 1. 見取り算・暗算: layout=sum + lines
+  const lines =
+    getStringArray(q.lines) ??
+    getStringArray(q.numbers) ??
+    getStringArray(q.values) ??
+    getStringArray(q.items) ??
+    getStringArray(q.addends) ??
+    getStringArray(q.terms) ??
+    getStringArray(q.list);
+
+  if ((layout === "sum" || practiceType === "mitorizan" || practiceType === "anzan") && lines && lines.length >= 2) {
+    return {
+      kind: "sum",
+      lines,
+      answer,
+    };
+  }
+
+  // 2. かけ算
+  const left =
+    getFirstString(q.left, q.a, q.multiplicand, q.first, q.value1);
+  const right =
+    getFirstString(q.right, q.b, q.multiplier, q.second, q.value2);
+
+  if ((layout === "multiply" || practiceType === "kakezan") && left && right) {
+    return {
+      kind: "multiply",
+      left,
+      right,
+      answer,
+    };
+  }
+
+  // 3. わり算
+  const dividend =
+    getFirstString(q.dividend, q.left, q.value1, q.first);
+  const divisor =
+    getFirstString(q.divisor, q.right, q.value2, q.second);
+
+  if ((layout === "divide" || practiceType === "warizan") && dividend && divisor) {
+    return {
+      kind: "divide",
+      dividend,
+      divisor,
+      answer,
+    };
+  }
+
+  // 4. 文字列ベース
   const directText = getFirstString(
     q.displayText,
     q.questionText,
@@ -79,84 +136,14 @@ function getQuestionViewModel(
     return {
       kind: "text",
       text: directText,
-      answer: toNumber(q.answer) ?? undefined,
-    };
-  }
-
-  const numberArray =
-    getNumberArray(q.numbers) ??
-    getNumberArray(q.values) ??
-    getNumberArray(q.items) ??
-    getNumberArray(q.addends) ??
-    getNumberArray(q.terms) ??
-    getNumberArray(q.list);
-
-  if (
-    (practiceType === "mitorizan" || practiceType === "anzan") &&
-    numberArray &&
-    numberArray.length >= 2
-  ) {
-    return {
-      kind: "sum",
-      numbers: numberArray,
-      answer: toNumber(q.answer) ?? undefined,
-    };
-  }
-
-  const left =
-    toNumber(q.left) ??
-    toNumber(q.a) ??
-    toNumber(q.multiplicand) ??
-    toNumber(q.first);
-
-  const right =
-    toNumber(q.right) ??
-    toNumber(q.b) ??
-    toNumber(q.multiplier) ??
-    toNumber(q.second);
-
-  if (practiceType === "kakezan" && left !== null && right !== null) {
-    return {
-      kind: "multiply",
-      left,
-      right,
-      answer: toNumber(q.answer) ?? undefined,
-    };
-  }
-
-  const dividend =
-    toNumber(q.dividend) ??
-    toNumber(q.left) ??
-    toNumber(q.value1) ??
-    toNumber(q.first);
-
-  const divisor =
-    toNumber(q.divisor) ??
-    toNumber(q.right) ??
-    toNumber(q.value2) ??
-    toNumber(q.second);
-
-  if (practiceType === "warizan" && dividend !== null && divisor !== null) {
-    return {
-      kind: "divide",
-      dividend,
-      divisor,
-      answer: toNumber(q.answer) ?? undefined,
-    };
-  }
-
-  if (numberArray && numberArray.length >= 2) {
-    return {
-      kind: "sum",
-      numbers: numberArray,
-      answer: toNumber(q.answer) ?? undefined,
+      answer,
     };
   }
 
   return {
     kind: "unknown",
     raw: q,
-    answer: toNumber(q.answer) ?? undefined,
+    answer,
   };
 }
 
@@ -442,10 +429,10 @@ export default function PracticeClientPage() {
             {config.typeLabel}
           </div>
           <div className="space-y-2 text-right font-mono text-4xl font-bold tracking-wide text-slate-900">
-            {currentView.numbers.map((num, index) => (
-              <div key={`${num}-${index}`}>
+            {currentView.lines.map((line, index) => (
+              <div key={`${line}-${index}`}>
                 {index === 0 ? "" : "+"}
-                {num}
+                {line}
               </div>
             ))}
           </div>
