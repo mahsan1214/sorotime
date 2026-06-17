@@ -1,0 +1,568 @@
+"use client";
+
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
+import HandwritingPad from "../../components/HandwritingPad";
+import {
+  DEFAULT_LEVEL,
+  DEFAULT_TYPE,
+  createQuestionSet,
+  formatTime,
+  getPracticeConfig,
+  isLevelKey,
+  isPracticeType,
+} from "../../lib/practice-config";
+import { saveHistory } from "../../lib/history-storage";
+
+type InputMode = "handwriting" | "keypad";
+type HandwritingPadHandle = {
+  clear: () => void;
+};
+
+export default function PracticeClientPage() {
+  const searchParams = useSearchParams();
+
+  const levelParam = searchParams.get("level");
+  const typeParam = searchParams.get("type");
+
+  const level = isLevelKey(levelParam) ? levelParam : DEFAULT_LEVEL;
+  const type = isPracticeType(typeParam) ? typeParam : DEFAULT_TYPE;
+
+  const config = useMemo(() => getPracticeConfig(level, type) as any, [level, type]);
+
+  const [questions, setQuestions] = useState<any[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [inputValue, setInputValue] = useState("");
+  const [score, setScore] = useState(0);
+  const [checked, setChecked] = useState(false);
+  const [isCorrect, setIsCorrect] = useState(false);
+  const [timeLeft, setTimeLeft] = useState<number>(config.time);
+  const [isFinished, setIsFinished] = useState(false);
+  const [inputMode, setInputMode] = useState<InputMode>("handwriting");
+
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const handwritingPadRef = useRef<HandwritingPadHandle | null>(null);
+  const savedRef = useRef(false);
+
+  const currentQuestion = questions[currentIndex];
+
+  const conditionText = useMemo(() => {
+    if (!config) return "";
+
+    if (config.type === "mitorizan" || config.type === "anzan") {
+      const digits = config.digits ?? 0;
+      const linesCount = config.linesCount ?? 0;
+      return `${digits}けた ${linesCount}口 / ${config.count}問 / ${config.time}秒`;
+    }
+
+    if (config.type === "kakezan") {
+      const leftDigits = config.leftDigits ?? 0;
+      const rightDigits = config.rightDigits ?? 0;
+      return `${leftDigits}けた × ${rightDigits}けた / ${config.count}問 / ${config.time}秒`;
+    }
+
+    if (config.type === "warizan") {
+      const divisorDigits = config.divisorDigits ?? 0;
+      const quotientDigits = config.quotientDigits ?? 0;
+      return `${divisorDigits}けたでわる / 商 ${quotientDigits}けた / ${config.count}問 / ${config.time}秒`;
+    }
+
+    return `${config.count}問 / ${config.time}秒`;
+  }, [config]);
+
+  useEffect(() => {
+    const nextQuestions = createQuestionSet(config) as any[];
+    setQuestions(nextQuestions);
+    setCurrentIndex(0);
+    setInputValue("");
+    setScore(0);
+    setChecked(false);
+    setIsCorrect(false);
+    setTimeLeft(config.time);
+    setIsFinished(false);
+    setInputMode("handwriting");
+    savedRef.current = false;
+
+    setTimeout(() => {
+      handwritingPadRef.current?.clear();
+      inputRef.current?.focus();
+    }, 0);
+  }, [config]);
+
+  useEffect(() => {
+    if (isFinished) return;
+
+    if (timeLeft <= 0) {
+      setIsFinished(true);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setTimeLeft((prev) => prev - 1);
+    }, 1000);
+
+    return () => window.clearTimeout(timer);
+  }, [timeLeft, isFinished]);
+
+  useEffect(() => {
+    if (!isFinished || savedRef.current) return;
+
+    savedRef.current = true;
+
+    const percentage =
+      config.count > 0 ? Math.round((score / config.count) * 100) : 0;
+
+    saveHistory({
+      id: `${Date.now()}`,
+      playedAt: new Date().toISOString(),
+      levelKey: config.levelKey,
+      levelLabel: config.levelLabel,
+      type: config.type,
+      typeLabel: config.typeLabel,
+      count: config.count,
+      timeLimit: config.time,
+      remainingTime: timeLeft,
+      correctCount: score,
+      percentage,
+      conditionText,
+    });
+  }, [isFinished, score, config, timeLeft, conditionText]);
+
+  const focusInput = () => {
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 0);
+  };
+
+  const clearInput = () => {
+    setInputValue("");
+    handwritingPadRef.current?.clear();
+    focusInput();
+  };
+
+  const appendDigit = (digit: string) => {
+    if (checked || isFinished) return;
+    setInputValue((prev) => `${prev}${digit}`);
+    focusInput();
+  };
+
+  const backspaceInput = () => {
+    if (checked || isFinished) return;
+    setInputValue((prev) => prev.slice(0, -1));
+    focusInput();
+  };
+
+  const handleCheck = () => {
+    if (!currentQuestion || checked || inputValue.trim() === "") return;
+
+    const submittedAnswer = inputValue.trim();
+    const correct = Number(submittedAnswer) === Number(currentQuestion.answer);
+
+    setChecked(true);
+    setIsCorrect(correct);
+
+    if (correct) {
+      setScore((prev) => prev + 1);
+    }
+
+    setInputValue("");
+    handwritingPadRef.current?.clear();
+    focusInput();
+  };
+
+  const handleNext = () => {
+    if (currentIndex >= config.count - 1) {
+      setIsFinished(true);
+      return;
+    }
+
+    setCurrentIndex((prev) => prev + 1);
+    setInputValue("");
+    setChecked(false);
+    setIsCorrect(false);
+    handwritingPadRef.current?.clear();
+    focusInput();
+  };
+
+  const handleRestart = () => {
+    const nextQuestions = createQuestionSet(config) as any[];
+    setQuestions(nextQuestions);
+    setCurrentIndex(0);
+    setInputValue("");
+    setScore(0);
+    setChecked(false);
+    setIsCorrect(false);
+    setTimeLeft(config.time);
+    setIsFinished(false);
+    setInputMode("handwriting");
+    savedRef.current = false;
+    handwritingPadRef.current?.clear();
+    focusInput();
+  };
+
+  const handleRecognized = (text: string) => {
+    const cleaned = (text || "").replace(/[^0-9]/g, "");
+    setInputValue(cleaned);
+    focusInput();
+  };
+
+  const handleEnterSubmit = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      handleCheck();
+    }
+  };
+
+  const switchInputMode = (mode: InputMode) => {
+    setInputMode(mode);
+    setInputValue("");
+    handwritingPadRef.current?.clear();
+    focusInput();
+  };
+
+  const renderQuestionBody = () => {
+    if (!currentQuestion) return null;
+
+    if (currentQuestion.numbers && Array.isArray(currentQuestion.numbers)) {
+      return (
+        <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 ring-1 ring-slate-200">
+          <div className="mb-3 text-center text-sm font-bold text-slate-500">
+            {config.typeLabel}
+          </div>
+          <div className="space-y-2 text-right font-mono text-4xl font-bold tracking-wide text-slate-900">
+            {currentQuestion.numbers.map((num: number, index: number) => (
+              <div key={`${num}-${index}`}>
+                {index === 0 ? "" : "+"}
+                {num}
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    if (
+      typeof currentQuestion.left !== "undefined" &&
+      typeof currentQuestion.right !== "undefined"
+    ) {
+      return (
+        <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 ring-1 ring-slate-200">
+          <div className="mb-3 text-center text-sm font-bold text-slate-500">
+            {config.typeLabel}
+          </div>
+          <div className="space-y-2 text-right font-mono text-4xl font-bold tracking-wide text-slate-900">
+            <div>{currentQuestion.left}</div>
+            <div>× {currentQuestion.right}</div>
+            <div className="border-t-4 border-slate-300 pt-3">？</div>
+          </div>
+        </div>
+      );
+    }
+
+    if (
+      typeof currentQuestion.dividend !== "undefined" &&
+      typeof currentQuestion.divisor !== "undefined"
+    ) {
+      return (
+        <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 ring-1 ring-slate-200">
+          <div className="mb-3 text-center text-sm font-bold text-slate-500">
+            {config.typeLabel}
+          </div>
+          <div className="text-center font-mono text-4xl font-bold tracking-wide text-slate-900">
+            {currentQuestion.dividend} ÷ {currentQuestion.divisor}
+          </div>
+          <div className="mt-4 text-center text-lg font-bold text-slate-500">
+            答えを書こう
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 text-center ring-1 ring-slate-200">
+        <div className="mb-3 text-sm font-bold text-slate-500">{config.typeLabel}</div>
+        <div className="font-mono text-4xl font-bold tracking-wide text-slate-900">
+          {currentQuestion.displayText ?? "問題"}
+        </div>
+      </div>
+    );
+  };
+
+  if (isFinished) {
+    const percentage =
+      config.count > 0 ? Math.round((score / config.count) * 100) : 0;
+
+    return (
+      <main className="min-h-screen bg-gradient-to-b from-orange-50 to-white px-4 py-6 text-slate-800 sm:px-6 sm:py-8">
+        <div className="mx-auto max-w-4xl">
+          <div className="rounded-[2rem] bg-white p-6 shadow-sm ring-1 ring-slate-200 sm:p-8">
+            <div className="text-center">
+              <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-orange-100 text-4xl">
+                🎉
+              </div>
+              <h1 className="text-3xl font-extrabold text-slate-900 sm:text-4xl">
+                練習おわり
+              </h1>
+              <p className="mt-3 text-base text-slate-600 sm:text-lg">
+                {config.levelLabel} / {config.typeLabel}
+              </p>
+              <p className="mt-1 text-sm text-slate-500">{conditionText}</p>
+            </div>
+
+            <div className="mt-8 grid gap-4 sm:grid-cols-3">
+              <div className="rounded-3xl bg-orange-50 p-5 text-center ring-1 ring-orange-100">
+                <div className="text-sm font-bold text-orange-700">正解</div>
+                <div className="mt-2 text-3xl font-extrabold text-orange-600">
+                  {score} / {config.count}
+                </div>
+              </div>
+
+              <div className="rounded-3xl bg-emerald-50 p-5 text-center ring-1 ring-emerald-100">
+                <div className="text-sm font-bold text-emerald-700">正答率</div>
+                <div className="mt-2 text-3xl font-extrabold text-emerald-600">
+                  {percentage}%
+                </div>
+              </div>
+
+              <div className="rounded-3xl bg-sky-50 p-5 text-center ring-1 ring-sky-100">
+                <div className="text-sm font-bold text-sky-700">残り時間</div>
+                <div className="mt-2 text-3xl font-extrabold text-sky-600">
+                  {formatTime(timeLeft)}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-8 grid gap-3 sm:grid-cols-3">
+              <button
+                onClick={handleRestart}
+                className="rounded-2xl bg-orange-500 px-5 py-4 text-lg font-bold text-white shadow-sm transition hover:bg-orange-600"
+              >
+                もう一回やる
+              </button>
+
+              <Link
+                href="/history"
+                className="rounded-2xl border border-slate-200 bg-white px-5 py-4 text-center text-lg font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+              >
+                練習記録を見る
+              </Link>
+
+              <Link
+                href="/settings"
+                className="rounded-2xl border border-slate-200 bg-white px-5 py-4 text-center text-lg font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+              >
+                設定にもどる
+              </Link>
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-gradient-to-b from-orange-50 to-white px-4 py-6 text-slate-800 sm:px-6 sm:py-8">
+      <div className="mx-auto max-w-5xl">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <Link
+            href="/settings"
+            className="inline-flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-50"
+          >
+            ← 設定にもどる
+          </Link>
+
+          <div className="rounded-2xl bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm ring-1 ring-slate-200">
+            のこり時間:{" "}
+            <span className="text-lg text-orange-600">{formatTime(timeLeft)}</span>
+          </div>
+        </div>
+
+        <div className="rounded-[2rem] bg-white p-5 shadow-sm ring-1 ring-slate-200 sm:p-8">
+          <div className="text-center">
+            <h1 className="text-2xl font-extrabold text-slate-900 sm:text-4xl">
+              {config.levelLabel} / {config.typeLabel}
+            </h1>
+            <p className="mt-2 text-sm font-bold text-slate-500 sm:text-base">
+              {conditionText}
+            </p>
+            <p className="mt-4 text-base font-bold text-slate-700 sm:text-lg">
+              第{currentIndex + 1}問 / 全{config.count}問
+            </p>
+          </div>
+
+          <div className="mt-4 h-4 overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-orange-400 transition-all"
+              style={{
+                width: `${((currentIndex + 1) / config.count) * 100}%`,
+              }}
+            />
+          </div>
+
+          <div className="mt-8">{renderQuestionBody()}</div>
+
+          <div className="mt-8 rounded-3xl bg-slate-50 p-4 ring-1 ring-slate-200 sm:p-6">
+            <div className="mb-4 flex flex-wrap justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => switchInputMode("handwriting")}
+                className={`rounded-2xl px-4 py-3 text-sm font-bold transition sm:text-base ${
+                  inputMode === "handwriting"
+                    ? "bg-orange-500 text-white shadow-sm"
+                    : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+                }`}
+              >
+                手書き入力
+              </button>
+
+              <button
+                type="button"
+                onClick={() => switchInputMode("keypad")}
+                className={`rounded-2xl px-4 py-3 text-sm font-bold transition sm:text-base ${
+                  inputMode === "keypad"
+                    ? "bg-orange-500 text-white shadow-sm"
+                    : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+                }`}
+              >
+                数字ボタン入力
+              </button>
+            </div>
+
+            <div className="mx-auto max-w-md">
+              <label
+                htmlFor="answer"
+                className="mb-2 block text-center text-sm font-bold text-slate-600"
+              >
+                答え
+              </label>
+
+              <input
+                ref={inputRef}
+                id="answer"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={inputValue}
+                onChange={(e) =>
+                  setInputValue(e.target.value.replace(/[^0-9]/g, ""))
+                }
+                onKeyDown={handleEnterSubmit}
+                className="w-full rounded-2xl border-2 border-orange-200 bg-white px-5 py-4 text-center text-3xl font-bold tracking-widest text-slate-900 outline-none transition focus:border-orange-400"
+                placeholder="ここに答え"
+              />
+            </div>
+
+            {inputMode === "handwriting" ? (
+              <div className="mt-6">
+                <HandwritingPad
+                  ref={handwritingPadRef}
+                  onRecognized={handleRecognized}
+                />
+              </div>
+            ) : (
+              <div className="mx-auto mt-6 max-w-md">
+                <div className="grid grid-cols-3 gap-3">
+                  {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((digit) => (
+                    <button
+                      key={digit}
+                      type="button"
+                      onClick={() => appendDigit(digit)}
+                      className="rounded-2xl bg-white px-4 py-4 text-2xl font-extrabold text-slate-800 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
+                    >
+                      {digit}
+                    </button>
+                  ))}
+
+                  <button
+                    type="button"
+                    onClick={clearInput}
+                    className="rounded-2xl bg-rose-50 px-4 py-4 text-lg font-bold text-rose-600 ring-1 ring-rose-100 transition hover:bg-rose-100"
+                  >
+                    けす
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => appendDigit("0")}
+                    className="rounded-2xl bg-white px-4 py-4 text-2xl font-extrabold text-slate-800 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
+                  >
+                    0
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={backspaceInput}
+                    className="rounded-2xl bg-sky-50 px-4 py-4 text-lg font-bold text-sky-600 ring-1 ring-sky-100 transition hover:bg-sky-100"
+                  >
+                    1字けす
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="mx-auto mt-6 max-w-md">
+              {!checked ? (
+                <button
+                  type="button"
+                  onClick={handleCheck}
+                  className="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-xl font-extrabold text-white shadow-sm transition hover:bg-emerald-600"
+                >
+                  答えあわせ
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleNext}
+                  className="w-full rounded-2xl bg-orange-500 px-5 py-4 text-xl font-extrabold text-white shadow-sm transition hover:bg-orange-600"
+                >
+                  {currentIndex >= config.count - 1 ? "結果を見る" : "次の問題へ"}
+                </button>
+              )}
+            </div>
+
+            {checked && (
+              <div
+                className={`mx-auto mt-6 max-w-md rounded-3xl p-5 text-center ring-1 ${
+                  isCorrect
+                    ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
+                    : "bg-rose-50 text-rose-700 ring-rose-100"
+                }`}
+              >
+                <div className="text-2xl font-extrabold">
+                  {isCorrect ? "せいかい！" : "おしい！"}
+                </div>
+                <div className="mt-2 text-lg font-bold">
+                  正しい答え: {currentQuestion?.answer}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-6 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl bg-orange-50 p-4 text-center ring-1 ring-orange-100">
+              <div className="text-sm font-bold text-orange-700">今の正解数</div>
+              <div className="mt-1 text-2xl font-extrabold text-orange-600">
+                {score}
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-sky-50 p-4 text-center ring-1 ring-sky-100">
+              <div className="text-sm font-bold text-sky-700">今の問題</div>
+              <div className="mt-1 text-2xl font-extrabold text-sky-600">
+                {currentIndex + 1}
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-emerald-50 p-4 text-center ring-1 ring-emerald-100">
+              <div className="text-sm font-bold text-emerald-700">残り時間</div>
+              <div className="mt-1 text-2xl font-extrabold text-emerald-600">
+                {formatTime(timeLeft)}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}
