@@ -72,7 +72,6 @@ function getQuestionViewModel(
   const answer = toNumber(q.answer) ?? undefined;
   const layout = typeof q.layout === "string" ? q.layout : "";
 
-  // 1. 見取り算・暗算: layout=sum + lines
   const lines =
     getStringArray(q.lines) ??
     getStringArray(q.numbers) ??
@@ -82,7 +81,12 @@ function getQuestionViewModel(
     getStringArray(q.terms) ??
     getStringArray(q.list);
 
-  if ((layout === "sum" || practiceType === "mitorizan" || practiceType === "anzan") && lines && lines.length >= 2) {
+  // 1. 見取り算・暗算
+  if (
+    (layout === "sum" || practiceType === "mitorizan" || practiceType === "anzan") &&
+    lines &&
+    lines.length >= 2
+  ) {
     return {
       kind: "sum",
       lines,
@@ -90,34 +94,60 @@ function getQuestionViewModel(
     };
   }
 
-  // 2. かけ算
-  const left =
-    getFirstString(q.left, q.a, q.multiplicand, q.first, q.value1);
-  const right =
-    getFirstString(q.right, q.b, q.multiplier, q.second, q.value2);
+  // 2. かけ算: layout=multiply + lines[0], lines[1] に対応
+  if ((layout === "multiply" || practiceType === "kakezan")) {
+    if (lines && lines.length >= 2) {
+      return {
+        kind: "multiply",
+        left: lines[0],
+        right: lines[1],
+        answer,
+      };
+    }
 
-  if ((layout === "multiply" || practiceType === "kakezan") && left && right) {
-    return {
-      kind: "multiply",
-      left,
-      right,
-      answer,
-    };
+    const left =
+      getFirstString(q.left, q.a, q.multiplicand, q.first, q.value1);
+    const right =
+      getFirstString(q.right, q.b, q.multiplier, q.second, q.value2);
+
+    if (left && right) {
+      return {
+        kind: "multiply",
+        left,
+        right,
+        answer,
+      };
+    }
   }
 
-  // 3. わり算
-  const dividend =
-    getFirstString(q.dividend, q.left, q.value1, q.first);
-  const divisor =
-    getFirstString(q.divisor, q.right, q.value2, q.second);
+  // 3. わり算: layout=divide / division + lines[0], lines[1] に対応
+  if (
+    layout === "divide" ||
+    layout === "division" ||
+    practiceType === "warizan"
+  ) {
+    if (lines && lines.length >= 2) {
+      return {
+        kind: "divide",
+        dividend: lines[0],
+        divisor: lines[1],
+        answer,
+      };
+    }
 
-  if ((layout === "divide" || practiceType === "warizan") && dividend && divisor) {
-    return {
-      kind: "divide",
-      dividend,
-      divisor,
-      answer,
-    };
+    const dividend =
+      getFirstString(q.dividend, q.left, q.value1, q.first);
+    const divisor =
+      getFirstString(q.divisor, q.right, q.value2, q.second);
+
+    if (dividend && divisor) {
+      return {
+        kind: "divide",
+        dividend,
+        divisor,
+        answer,
+      };
+    }
   }
 
   // 4. 文字列ベース
