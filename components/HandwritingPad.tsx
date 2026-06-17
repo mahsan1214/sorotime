@@ -259,12 +259,16 @@ const HandwritingPad = forwardRef<HandwritingPadHandle, HandwritingPadProps>(
     ): Promise<string> => {
       const { default: Tesseract } = await import("tesseract.js");
 
-      const result = await Tesseract.recognize(image, "eng", {
-        tessedit_char_whitelist: "0123456789",
-        tessedit_pageseg_mode: String(psm),
-        user_defined_dpi: "300",
-        preserve_interword_spaces: "1",
-      });
+const result = await Tesseract.recognize(
+  image,
+  "eng",
+  {
+    tessedit_char_whitelist: "0123456789",
+    tessedit_pageseg_mode: String(psm),
+    user_defined_dpi: "300",
+    preserve_interword_spaces: "1",
+  } as any
+);
 
       return (result.data.text || "").replace(/[^0-9]/g, "");
     };
