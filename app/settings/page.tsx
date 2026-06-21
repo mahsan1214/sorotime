@@ -1,177 +1,344 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  DEFAULT_LEVEL,
+  PRACTICE_TYPE_LABELS,
+  LEVEL_ORDER,
+  EXAM_STANDARDS,
+  getAvailablePracticeTypes,
+  getDefaultTypeForLevel,
+  getOfficialLevelStandard,
+  getPracticeConfig,
+  sanitizeTimeSec,
+  type LevelBand,
+  type LevelKey,
+  type PracticeType,
+  type SubjectKey,
+} from "../../lib/practice-config";
 
-type LevelKey = "kyu10" | "kyu7" | "kyu5" | "kyu3" | "jun1" | "kyu1" | "dan1";
-type PracticeType = "mitorizan" | "anzan" | "kakezan" | "warizan";
+const SUBJECT_LABELS: Record<SubjectKey, string> = {
+  kakezan: "かけ算",
+  warizan: "わり算",
+  mitorizan: "見取り算",
+  anzan: "暗算",
+  denpyozan: "伝票算",
+  oyoKeisan: "応用計算",
+  kaiho: "開法",
+};
 
-const levelOptions: { key: LevelKey; label: string; note: string }[] = [
-  { key: "kyu10", label: "10級", note: "はじめての練習向け" },
-  { key: "kyu7", label: "7級", note: "少しなれてきた方向け" },
-  { key: "kyu5", label: "5級", note: "小学生の中級練習向け" },
-  { key: "kyu3", label: "3級", note: "しっかり練習したい方向け" },
-  { key: "jun1", label: "準1級", note: "上級に近い練習" },
-  { key: "kyu1", label: "1級", note: "高い集中力が必要" },
-  { key: "dan1", label: "初段", note: "かなり難しい練習" },
-];
+function getBandLabel(band: LevelBand): string {
+  switch (band) {
+    case "shokyu":
+      return "初級";
+    case "chukyu":
+      return "中級";
+    case "jokyu":
+      return "上級";
+    case "dan":
+      return "段位";
+    default:
+      return "";
+  }
+}
 
-const typeOptions: { key: PracticeType; label: string; note: string }[] = [
-  { key: "mitorizan", label: "見取り算", note: "数字を見て計算する" },
-  { key: "anzan", label: "暗算", note: "頭の中で計算する" },
-  { key: "kakezan", label: "かけ算", note: "かけ算の練習" },
-  { key: "warizan", label: "わり算", note: "わり算の練習" },
-];
+function formatSubjectList(subjects: SubjectKey[]): string {
+  if (subjects.length === 0) return "なし";
+  return subjects.map((subject) => SUBJECT_LABELS[subject]).join("・");
+}
 
-function sanitizeTime(value: string): number {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return 60;
-  const intValue = Math.floor(n);
-  if (intValue < 10) return 10;
-  if (intValue > 600) return 600;
-  return intValue;
+function buildPracticeHref(
+  level: LevelKey,
+  type: PracticeType,
+  customTimeSec?: number
+): string {
+  const params = new URLSearchParams({
+    level,
+    type,
+  });
+
+  if (customTimeSec) {
+    params.set("time", String(customTimeSec));
+  }
+
+  return `/practice?${params.toString()}`;
 }
 
 export default function SettingsPage() {
-  const router = useRouter();
-  const [selectedLevel, setSelectedLevel] = useState<LevelKey>("kyu5");
-  const [selectedType, setSelectedType] = useState<PracticeType>("mitorizan");
-  const [timeValue, setTimeValue] = useState("60");
+  const [selectedLevel, setSelectedLevel] = useState<LevelKey>(DEFAULT_LEVEL);
+  const [selectedType, setSelectedType] = useState<PracticeType>(
+    getDefaultTypeForLevel(DEFAULT_LEVEL)
+  );
+  const [timeInput, setTimeInput] = useState("");
 
-  const handleStart = () => {
-    const safeTime = sanitizeTime(timeValue);
-    router.push(
-      `/practice?level=${selectedLevel}&type=${selectedType}&time=${safeTime}`
-    );
-  };
+  const availableTypes = useMemo(
+    () => getAvailablePracticeTypes(selectedLevel),
+    [selectedLevel]
+  );
+
+  useEffect(() => {
+    if (!availableTypes.includes(selectedType)) {
+      setSelectedType(availableTypes[0] ?? getDefaultTypeForLevel(selectedLevel));
+    }
+  }, [availableTypes, selectedLevel, selectedType]);
+
+  const customTimeSec = useMemo(() => {
+    if (timeInput.trim() === "") return undefined;
+    return sanitizeTimeSec(Number(timeInput));
+  }, [timeInput]);
+
+  const standard = useMemo(
+    () => getOfficialLevelStandard(selectedLevel),
+    [selectedLevel]
+  );
+
+  const previewConfig = useMemo(
+    () => getPracticeConfig(selectedLevel, selectedType, customTimeSec),
+    [selectedLevel, selectedType, customTimeSec]
+  );
+
+  const practiceHref = useMemo(
+    () => buildPracticeHref(selectedLevel, selectedType, customTimeSec),
+    [selectedLevel, selectedType, customTimeSec]
+  );
+
+  const supportsOnlyCurrentAppSubjects =
+    standard.optionalSubjects.includes("denpyozan") ||
+    standard.optionalSubjects.includes("oyoKeisan") ||
+    standard.optionalSubjects.includes("kaiho");
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-orange-50 to-white px-4 py-6 text-slate-800 sm:px-6 sm:py-8">
-      <div className="mx-auto max-w-5xl">
-        <div className="mb-6">
-          <Link
-            href="/"
-            className="inline-flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-50"
-          >
-            ← ホームにもどる
-          </Link>
-        </div>
+      <div className="mx-auto max-w-5xl space-y-6">
+        <header className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+          <p className="text-sm font-semibold text-orange-600">Sorotime 設定</p>
+          <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-900">
+            全珠連基準の練習設定
+          </h1>
+          <p className="mt-3 text-sm leading-7 text-slate-600">
+            級・段ごとの公式構成を基準に、現在のアプリで実装済みの種目だけを選べるようにしています。
+            3級以上は本来「選択種目」がありますが、現時点では
+            見取り算・暗算・かけ算・わり算を中心に練習する構成です。
+          </p>
+        </header>
 
-        <div className="rounded-[2rem] bg-white p-5 shadow-sm ring-1 ring-slate-200 sm:p-8">
-          <div className="text-center">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-orange-100 text-3xl">
-              ⚙️
-            </div>
-            <h1 className="text-3xl font-extrabold text-slate-900 sm:text-4xl">
-              練習の設定
-            </h1>
-            <p className="mt-3 text-sm text-slate-600 sm:text-base">
-              級・段、種目、時間をえらんで練習をはじめよう
-            </p>
-          </div>
+        <section className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+          <div className="space-y-6">
+            <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              <h2 className="text-xl font-bold text-slate-900">1. 級・段を選ぶ</h2>
+              <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+                {LEVEL_ORDER.map((level) => {
+                  const item = EXAM_STANDARDS[level];
+                  const active = selectedLevel === level;
 
-          <section className="mt-8">
-            <h2 className="mb-4 text-lg font-extrabold text-slate-900 sm:text-xl">
-              級・段
-            </h2>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {levelOptions.map((option) => {
-                const selected = selectedLevel === option.key;
-                return (
-                  <button
-                    key={option.key}
-                    type="button"
-                    onClick={() => setSelectedLevel(option.key)}
-                    className={`rounded-3xl p-5 text-left transition ${
-                      selected
-                        ? "bg-orange-500 text-white shadow-md"
-                        : "bg-slate-50 text-slate-800 ring-1 ring-slate-200 hover:bg-slate-100"
-                    }`}
-                  >
-                    <div className="text-xl font-extrabold">{option.label}</div>
-                    <div
-                      className={`mt-2 text-sm ${
-                        selected ? "text-orange-50" : "text-slate-500"
-                      }`}
+                  return (
+                    <button
+                      key={level}
+                      type="button"
+                      onClick={() => setSelectedLevel(level)}
+                      className={[
+                        "rounded-2xl border px-4 py-3 text-left transition",
+                        active
+                          ? "border-orange-500 bg-orange-50 text-orange-900 shadow-sm"
+                          : "border-slate-200 bg-white text-slate-700 hover:border-orange-300 hover:bg-orange-50/50",
+                      ].join(" ")}
                     >
-                      {option.note}
-                    </div>
-                  </button>
-                );
-              })}
+                      <div className="text-sm font-semibold">{item.label}</div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        {getBandLabel(item.band)}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </section>
 
-          <section className="mt-10">
-            <h2 className="mb-4 text-lg font-extrabold text-slate-900 sm:text-xl">
-              種目
-            </h2>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {typeOptions.map((option) => {
-                const selected = selectedType === option.key;
-                return (
-                  <button
-                    key={option.key}
-                    type="button"
-                    onClick={() => setSelectedType(option.key)}
-                    className={`rounded-3xl p-5 text-left transition ${
-                      selected
-                        ? "bg-orange-500 text-white shadow-md"
-                        : "bg-slate-50 text-slate-800 ring-1 ring-slate-200 hover:bg-slate-100"
-                    }`}
-                  >
-                    <div className="text-xl font-extrabold">{option.label}</div>
-                    <div
-                      className={`mt-2 text-sm ${
-                        selected ? "text-orange-50" : "text-slate-500"
-                      }`}
-                    >
-                      {option.note}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-
-          <section className="mt-10">
-            <h2 className="mb-4 text-lg font-extrabold text-slate-900 sm:text-xl">
-              時間設定
-            </h2>
-            <div className="rounded-3xl bg-slate-50 p-5 ring-1 ring-slate-200">
-              <label
-                htmlFor="timeValue"
-                className="mb-3 block text-sm font-bold text-slate-700"
-              >
-                練習時間（秒）
-              </label>
-              <input
-                id="timeValue"
-                type="number"
-                min={10}
-                max={600}
-                step={10}
-                value={timeValue}
-                onChange={(e) => setTimeValue(e.target.value)}
-                className="w-full max-w-xs rounded-2xl border border-slate-300 bg-white px-4 py-3 text-xl font-bold text-slate-900 outline-none focus:border-orange-400"
-              />
-              <p className="mt-3 text-sm text-slate-500">
-                10〜600秒の間で設定できます
+            <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              <h2 className="text-xl font-bold text-slate-900">2. 種目を選ぶ</h2>
+              <p className="mt-2 text-sm text-slate-600">
+                選べるのは、この級・段で現在アプリ実装済みの種目です。
               </p>
-            </div>
-          </section>
 
-          <div className="mt-10">
-            <button
-              type="button"
-              onClick={handleStart}
-              className="w-full rounded-3xl bg-orange-500 px-6 py-5 text-xl font-extrabold text-white shadow-sm transition hover:bg-orange-600"
-            >
-              この内容で練習を始める
-            </button>
+              <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {availableTypes.map((type) => {
+                  const active = selectedType === type;
+
+                  return (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => setSelectedType(type)}
+                      className={[
+                        "rounded-2xl border px-4 py-4 text-center font-semibold transition",
+                        active
+                          ? "border-orange-500 bg-orange-500 text-white shadow-sm"
+                          : "border-slate-200 bg-white text-slate-700 hover:border-orange-300 hover:bg-orange-50/50",
+                      ].join(" ")}
+                    >
+                      {PRACTICE_TYPE_LABELS[type]}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              <h2 className="text-xl font-bold text-slate-900">3. 制限時間</h2>
+              <p className="mt-2 text-sm text-slate-600">
+                空欄なら公式基準時間を使用します。入力した場合はその秒数で上書きします。
+              </p>
+
+              <div className="mt-4 flex flex-col gap-3 sm:max-w-xs">
+                <label className="text-sm font-medium text-slate-700">
+                  カスタム時間（秒）
+                </label>
+                <input
+                  type="number"
+                  min={10}
+                  max={3600}
+                  inputMode="numeric"
+                  value={timeInput}
+                  onChange={(e) => setTimeInput(e.target.value)}
+                  placeholder={`例: ${previewConfig.timeSec}`}
+                  className="rounded-2xl border border-slate-300 px-4 py-3 text-lg outline-none transition focus:border-orange-500 focus:ring-4 focus:ring-orange-100"
+                />
+                <p className="text-xs text-slate-500">
+                  公式時間:{" "}
+                  {selectedType === "anzan"
+                    ? `${Math.floor((standard.anzanTimeSec ?? 180) / 60)}分`
+                    : `${Math.floor(standard.standardTimeSec / 60)}分`}
+                </p>
+              </div>
+            </div>
           </div>
-        </div>
+
+          <aside className="space-y-6">
+            <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              <h2 className="text-xl font-bold text-slate-900">プレビュー</h2>
+
+              <dl className="mt-4 space-y-4 text-sm">
+                <div>
+                  <dt className="font-semibold text-slate-500">級・段</dt>
+                  <dd className="mt-1 text-lg font-bold text-slate-900">
+                    {standard.label}
+                  </dd>
+                </div>
+
+                <div>
+                  <dt className="font-semibold text-slate-500">区分</dt>
+                  <dd className="mt-1 text-slate-800">{getBandLabel(standard.band)}</dd>
+                </div>
+
+                <div>
+                  <dt className="font-semibold text-slate-500">練習種目</dt>
+                  <dd className="mt-1 text-slate-800">
+                    {PRACTICE_TYPE_LABELS[selectedType]}
+                  </dd>
+                </div>
+
+                <div>
+                  <dt className="font-semibold text-slate-500">制限時間</dt>
+                  <dd className="mt-1 text-slate-800">
+                    {Math.floor(previewConfig.timeSec / 60)}分
+                    {previewConfig.timeSec % 60 !== 0
+                      ? `${previewConfig.timeSec % 60}秒`
+                      : ""}
+                  </dd>
+                </div>
+
+                <div>
+                  <dt className="font-semibold text-slate-500">問題数</dt>
+                  <dd className="mt-1 text-slate-800">{previewConfig.questionCount}問</dd>
+                </div>
+              </dl>
+
+              <Link
+                href={practiceHref}
+                className="mt-6 inline-flex w-full items-center justify-center rounded-2xl bg-orange-500 px-5 py-4 text-base font-bold text-white transition hover:bg-orange-600"
+              >
+                この設定で練習を開始
+              </Link>
+
+              <Link
+                href="/"
+                className="mt-3 inline-flex w-full items-center justify-center rounded-2xl border border-slate-200 px-5 py-4 text-base font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                ホームに戻る
+              </Link>
+            </div>
+
+            <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              <h2 className="text-xl font-bold text-slate-900">全珠連基準情報</h2>
+
+              <div className="mt-4 space-y-4 text-sm text-slate-700">
+                <div>
+                  <div className="font-semibold text-slate-500">必須種目</div>
+                  <div className="mt-1">
+                    {formatSubjectList(standard.requiredSubjects)}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="font-semibold text-slate-500">選択種目</div>
+                  <div className="mt-1">
+                    {formatSubjectList(standard.optionalSubjects)}
+                    {standard.optionalPickCount > 0 && (
+                      <span className="ml-2 text-slate-500">
+                        （{standard.optionalPickCount}種目選択）
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="font-semibold text-slate-500">珠算の公式時間</div>
+                  <div className="mt-1">{Math.floor(standard.standardTimeSec / 60)}分</div>
+                </div>
+
+                {standard.anzanTimeSec && (
+                  <div>
+                    <div className="font-semibold text-slate-500">暗算の公式時間</div>
+                    <div className="mt-1">
+                      {Math.floor(standard.anzanTimeSec / 60)}分
+                    </div>
+                  </div>
+                )}
+
+                {standard.sharedPaperByScore && (
+                  <div className="rounded-2xl bg-blue-50 px-4 py-3 text-blue-900">
+                    段位は共通問題を使用し、点数で認定する方式です。
+                  </div>
+                )}
+
+                {supportsOnlyCurrentAppSubjects && (
+                  <div className="rounded-2xl bg-amber-50 px-4 py-3 text-amber-900">
+                    この級・段には本来、伝票算・応用計算・開法などの選択種目がありますが、
+                    現在の練習画面では未実装のため選択肢に出していません。
+                  </div>
+                )}
+
+                {previewConfig.type === "anzan" && !previewConfig.strictOfficialForType && (
+                  <div className="rounded-2xl bg-amber-50 px-4 py-3 text-amber-900">
+                    暗算は資料に級別の細目が明記されていないため、
+                    現在のアプリでは見取り暗算形式の近似練習です。
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              <h2 className="text-xl font-bold text-slate-900">メモ</h2>
+              <ul className="mt-4 space-y-2 text-sm leading-7 text-slate-700">
+                {standard.notes.map((note, index) => (
+                  <li key={`${note}-${index}`} className="rounded-2xl bg-slate-50 px-4 py-3">
+                    {note}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </aside>
+        </section>
       </div>
     </main>
   );

@@ -2,597 +2,430 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_LEVEL,
   DEFAULT_TYPE,
+  PRACTICE_TYPE_LABELS,
   createQuestionSet,
   formatTime,
+  getAvailablePracticeTypes,
   getPracticeConfig,
   isLevelKey,
   isPracticeType,
+  sanitizeTimeSec,
+  type PracticeQuestion,
 } from "../../lib/practice-config";
-import { saveHistory } from "../../lib/history-storage";
 
-type RawQuestion = Record<string, any>;
+function parseAnswer(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
 
-type QuestionViewModel =
-  | { kind: "sum"; lines: string[]; answer?: number }
-  | { kind: "multiply"; left: string; right: string; answer?: number }
-  | { kind: "divide"; dividend: string; divisor: string; answer?: number }
-  | { kind: "text"; text: string; answer?: number }
-  | { kind: "unknown"; raw: RawQuestion; answer?: number };
-
-function toNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (
-    typeof value === "string" &&
-    value.trim() !== "" &&
-    !Number.isNaN(Number(value))
-  ) {
-    return Number(value);
-  }
-  return null;
-}
-
-function toDisplayString(value: unknown): string | null {
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  if (typeof value === "string" && value.trim() !== "") return value.trim();
-  return null;
-}
-
-function getStringArray(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-
-  const arr = value
-    .map((item) => toDisplayString(item))
-    .filter((item): item is string => item !== null);
-
-  return arr.length > 0 ? arr : null;
-}
-
-function getFirstString(...values: unknown[]): string | null {
-  for (const value of values) {
-    const s = toDisplayString(value);
-    if (s !== null) return s;
-  }
-  return null;
-}
-
-function sanitizeTime(value: string | null, fallback: number): number {
-  if (!value) return fallback;
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  const intValue = Math.floor(n);
-  if (intValue < 10) return 10;
-  if (intValue > 600) return 600;
-  return intValue;
-}
-
-function getQuestionViewModel(
-  raw: unknown,
-  practiceType: string
-): QuestionViewModel | null {
-  if (!raw || typeof raw !== "object") return null;
-
-  const q = raw as RawQuestion;
-  const answer = toNumber(q.answer) ?? undefined;
-  const layout = typeof q.layout === "string" ? q.layout : "";
-
-  const lines =
-    getStringArray(q.lines) ??
-    getStringArray(q.numbers) ??
-    getStringArray(q.values) ??
-    getStringArray(q.items) ??
-    getStringArray(q.addends) ??
-    getStringArray(q.terms) ??
-    getStringArray(q.list);
-
-  if (
-    (layout === "sum" || practiceType === "mitorizan" || practiceType === "anzan") &&
-    lines &&
-    lines.length >= 2
-  ) {
-    return {
-      kind: "sum",
-      lines,
-      answer,
-    };
-  }
-
-  if (layout === "multiply" || practiceType === "kakezan") {
-    if (lines && lines.length >= 2) {
-      return {
-        kind: "multiply",
-        left: lines[0],
-        right: lines[1],
-        answer,
-      };
-    }
-
-    const left =
-      getFirstString(q.left, q.a, q.multiplicand, q.first, q.value1);
-    const right =
-      getFirstString(q.right, q.b, q.multiplier, q.second, q.value2);
-
-    if (left && right) {
-      return {
-        kind: "multiply",
-        left,
-        right,
-        answer,
-      };
-    }
-  }
-
-  if (
-    layout === "divide" ||
-    layout === "division" ||
-    practiceType === "warizan"
-  ) {
-    if (lines && lines.length >= 2) {
-      return {
-        kind: "divide",
-        dividend: lines[0],
-        divisor: lines[1],
-        answer,
-      };
-    }
-
-    const dividend =
-      getFirstString(q.dividend, q.left, q.value1, q.first);
-    const divisor =
-      getFirstString(q.divisor, q.right, q.value2, q.second);
-
-    if (dividend && divisor) {
-      return {
-        kind: "divide",
-        dividend,
-        divisor,
-        answer,
-      };
-    }
-  }
-
-  const directText = getFirstString(
-    q.displayText,
-    q.questionText,
-    q.text,
-    q.question,
-    q.expression,
-    q.formula,
-    q.label,
-    q.prompt
+  const normalized = trimmed.replace(/[０-９]/g, (char) =>
+    String.fromCharCode(char.charCodeAt(0) - 0xfee0)
   );
 
-  if (directText) {
-    return {
-      kind: "text",
-      text: directText,
-      answer,
-    };
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildPracticeHref(
+  level: string,
+  type: string,
+  timeSec?: number
+): string {
+  const params = new URLSearchParams({
+    level,
+    type,
+  });
+
+  if (timeSec) {
+    params.set("time", String(timeSec));
   }
 
-  return {
-    kind: "unknown",
-    raw: q,
-    answer,
-  };
+  return `/practice?${params.toString()}`;
+}
+
+function KeypadButton({
+  label,
+  onClick,
+  disabled = false,
+  className = "",
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={[
+        "rounded-2xl px-4 py-4 text-xl font-bold shadow-sm transition",
+        disabled
+          ? "cursor-not-allowed bg-slate-100 text-slate-400"
+          : "bg-white text-slate-800 ring-1 ring-slate-200 hover:bg-orange-50 hover:ring-orange-300",
+        className,
+      ].join(" ")}
+    >
+      {label}
+    </button>
+  );
 }
 
 export default function PracticeClientPage() {
   const searchParams = useSearchParams();
 
-  const levelParam = searchParams.get("level");
+    const levelParam = searchParams.get("level");
   const typeParam = searchParams.get("type");
   const timeParam = searchParams.get("time");
 
-  const level = isLevelKey(levelParam) ? levelParam : DEFAULT_LEVEL;
-  const type = isPracticeType(typeParam) ? typeParam : DEFAULT_TYPE;
+  const resolvedLevel =
+    levelParam && isLevelKey(levelParam) ? levelParam : DEFAULT_LEVEL;
 
-  const baseConfig = useMemo(() => getPracticeConfig(level, type) as any, [level, type]);
-  const customTime = useMemo(
-    () => sanitizeTime(timeParam, baseConfig.time),
-    [timeParam, baseConfig.time]
+  const requestedType =
+    typeParam && isPracticeType(typeParam) ? typeParam : DEFAULT_TYPE;
+
+  const requestedTimeSec = sanitizeTimeSec(
+    timeParam ? Number(timeParam) : undefined
   );
+
+
   const config = useMemo(
-    () => ({
-      ...baseConfig,
-      time: customTime,
-    }),
-    [baseConfig, customTime]
+    () => getPracticeConfig(resolvedLevel, requestedType, requestedTimeSec),
+    [resolvedLevel, requestedType, requestedTimeSec]
   );
 
-  const [questions, setQuestions] = useState<RawQuestion[]>([]);
+  const [questions, setQuestions] = useState<PracticeQuestion[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [inputValue, setInputValue] = useState("");
-  const [score, setScore] = useState(0);
   const [checked, setChecked] = useState(false);
-  const [isCorrect, setIsCorrect] = useState(false);
-  const [timeLeft, setTimeLeft] = useState<number>(config.time);
-  const [isFinished, setIsFinished] = useState(false);
+  const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
+  const [score, setScore] = useState(0);
+  const [answeredCount, setAnsweredCount] = useState(0);
+  const [timeLeft, setTimeLeft] = useState(config.timeSec);
+  const [finished, setFinished] = useState(false);
   const [loadError, setLoadError] = useState("");
-  const [isTimerPaused, setIsTimerPaused] = useState(false);
-
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const savedRef = useRef(false);
+  const historySavedRef = useRef(false);
 
   const currentQuestion = questions[currentIndex] ?? null;
-  const currentView = useMemo(
-    () => getQuestionViewModel(currentQuestion, config.type),
-    [currentQuestion, config.type]
+  const totalQuestions = questions.length;
+  const availableTypes = useMemo(
+    () => getAvailablePracticeTypes(config.level),
+    [config.level]
   );
 
-  const conditionText = useMemo(() => {
-    if (!config) return "";
+  const accuracy = answeredCount > 0 ? Math.round((score / answeredCount) * 100) : 0;
 
-    if (config.type === "mitorizan" || config.type === "anzan") {
-      return `${config.digits ?? 0}けた ${config.linesCount ?? 0}口 / ${config.count}問 / ${config.time}秒`;
-    }
-
-    if (config.type === "kakezan") {
-      return `${config.leftDigits ?? 0}けた × ${config.rightDigits ?? 0}けた / ${config.count}問 / ${config.time}秒`;
-    }
-
-    if (config.type === "warizan") {
-      return `${config.divisorDigits ?? 0}けたでわる / 商 ${config.quotientDigits ?? 0}けた / ${config.count}問 / ${config.time}秒`;
-    }
-
-    return `${config.count}問 / ${config.time}秒`;
-  }, [config]);
-
-  useEffect(() => {
+  const initializeSession = useCallback(() => {
     try {
-      const rawQuestions = createQuestionSet(config) as unknown;
-      const safeQuestions = Array.isArray(rawQuestions)
-        ? (rawQuestions as RawQuestion[])
-        : [];
+      const generated = createQuestionSet(config);
 
-      setQuestions(safeQuestions);
+      setQuestions(generated);
       setCurrentIndex(0);
       setInputValue("");
-      setScore(0);
       setChecked(false);
-      setIsCorrect(false);
-      setTimeLeft(config.time);
-      setIsFinished(false);
-      setLoadError("");
-      setIsTimerPaused(false);
-      savedRef.current = false;
-
-      if (safeQuestions.length === 0) {
-        setLoadError("問題が0件でした");
-      }
-
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 0);
+      setIsCorrect(null);
+      setScore(0);
+      setAnsweredCount(0);
+      setTimeLeft(config.timeSec);
+      setFinished(false);
+      setLoadError(generated.length === 0 ? "問題の生成に失敗しました。" : "");
+      historySavedRef.current = false;
     } catch (error) {
       console.error(error);
       setQuestions([]);
       setCurrentIndex(0);
       setInputValue("");
-      setScore(0);
       setChecked(false);
-      setIsCorrect(false);
-      setTimeLeft(config.time);
-      setIsFinished(false);
-      setLoadError("問題の読み込みに失敗しました");
-      setIsTimerPaused(false);
-      savedRef.current = false;
+      setIsCorrect(null);
+      setScore(0);
+      setAnsweredCount(0);
+      setTimeLeft(config.timeSec);
+      setFinished(false);
+      setLoadError("問題の生成に失敗しました。");
+      historySavedRef.current = false;
     }
   }, [config]);
 
   useEffect(() => {
-    if (isFinished) return;
-    if (questions.length === 0) return;
-    if (isTimerPaused) return;
-    if (checked) return;
+    initializeSession();
+  }, [initializeSession]);
 
-    if (timeLeft <= 0) {
-      setIsFinished(true);
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      setTimeLeft((prev) => prev - 1);
-    }, 1000);
-
-    return () => window.clearTimeout(timer);
-  }, [timeLeft, isFinished, questions.length, isTimerPaused, checked]);
+  const isTimerRunning =
+    !finished && !checked && !!currentQuestion && timeLeft > 0;
 
   useEffect(() => {
-    if (!isFinished || savedRef.current || questions.length === 0) return;
+    if (!isTimerRunning) return;
 
-    savedRef.current = true;
+    const timerId = window.setTimeout(() => {
+      setTimeLeft((prev) => Math.max(0, prev - 1));
+    }, 1000);
 
-    const totalCount = questions.length || config.count;
-    const percentage =
-      totalCount > 0 ? Math.round((score / totalCount) * 100) : 0;
+    return () => window.clearTimeout(timerId);
+  }, [isTimerRunning, timeLeft]);
 
-    saveHistory({
-      id: `${Date.now()}`,
-      playedAt: new Date().toISOString(),
-      levelKey: config.levelKey,
+  useEffect(() => {
+    if (finished) return;
+    if (timeLeft > 0) return;
+
+    setFinished(true);
+    setChecked(false);
+    setIsCorrect(null);
+  }, [finished, timeLeft]);
+
+  useEffect(() => {
+    if (!finished || historySavedRef.current) return;
+
+    historySavedRef.current = true;
+
+    const record = {
+      id: `${Date.now()}-${config.level}-${config.type}`,
+      createdAt: new Date().toISOString(),
+      level: config.level,
       levelLabel: config.levelLabel,
       type: config.type,
       typeLabel: config.typeLabel,
-      count: totalCount,
-      timeLimit: config.time,
-      remainingTime: timeLeft,
-      correctCount: score,
-      percentage,
-      conditionText,
-    });
-  }, [isFinished, score, config, timeLeft, conditionText, questions.length]);
+      score,
+      answeredCount,
+      totalQuestions,
+      accuracy,
+      timeSec: config.timeSec,
+      remainingTimeSec: timeLeft,
+      usedCustomTime: config.timeSec !==
+        (config.type === "anzan"
+          ? config.anzanTimeSec ?? config.standardTimeSec
+          : config.standardTimeSec),
+    };
 
-  const focusInput = () => {
-    setTimeout(() => {
-      inputRef.current?.focus();
-    }, 0);
-  };
+    import("../../lib/history-storage")
+      .then((mod: any) => {
+        if (typeof mod?.saveHistory === "function") {
+          try {
+            mod.saveHistory(record);
+          } catch (error) {
+            console.error(error);
+          }
+        }
+      })
+      .catch(() => {
+        // history-storage がなくても練習自体は継続
+      });
+  }, [
+    finished,
+    config.level,
+    config.levelLabel,
+    config.type,
+    config.typeLabel,
+    config.timeSec,
+    config.standardTimeSec,
+    config.anzanTimeSec,
+    score,
+    answeredCount,
+    totalQuestions,
+    accuracy,
+    timeLeft,
+  ]);
 
-  const clearInput = () => {
-    setInputValue("");
-    focusInput();
-  };
+  const practiceHref = useMemo(
+    () => buildPracticeHref(config.level, config.type, requestedTimeSec),
+    [config.level, config.type, requestedTimeSec]
+  );
 
-  const appendDigit = (digit: string) => {
-    if (checked || isFinished || !currentView || currentView.kind === "unknown") return;
-    setInputValue((prev) => `${prev}${digit}`);
-    setIsTimerPaused(true);
-    focusInput();
-  };
+  const submitAnswer = useCallback(() => {
+    if (!currentQuestion || finished || checked) return;
 
-  const backspaceInput = () => {
-    if (checked || isFinished || !currentView || currentView.kind === "unknown") return;
-    setInputValue((prev) => prev.slice(0, -1));
-    focusInput();
-  };
+    const parsed = parseAnswer(inputValue);
+    if (parsed === null) return;
 
-  const handleCheck = () => {
-    if (!currentQuestion || !currentView || checked || inputValue.trim() === "") return;
-    if (currentView.kind === "unknown") {
-      setLoadError("この問題形式では答えあわせできません");
-      return;
-    }
-
-    const expectedAnswer = currentView.answer;
-    if (typeof expectedAnswer === "undefined") {
-      setLoadError("答えデータが見つかりません");
-      return;
-    }
-
-    const submittedAnswer = inputValue.trim();
-    const correct = Number(submittedAnswer) === Number(expectedAnswer);
+    const correct = parsed === currentQuestion.answer;
 
     setChecked(true);
     setIsCorrect(correct);
+    setAnsweredCount((prev) => prev + 1);
 
     if (correct) {
       setScore((prev) => prev + 1);
     }
+  }, [checked, currentQuestion, finished, inputValue]);
 
-    setInputValue("");
-    focusInput();
-  };
+  const goNext = useCallback(() => {
+    if (finished) return;
 
-  const handleNext = () => {
-    if (!currentView) return;
+    const isLastQuestion = currentIndex >= totalQuestions - 1;
 
-    if (currentIndex >= questions.length - 1) {
-      setIsFinished(true);
+    if (isLastQuestion) {
+      setFinished(true);
+      setChecked(false);
+      setIsCorrect(null);
       return;
     }
 
     setCurrentIndex((prev) => prev + 1);
     setInputValue("");
     setChecked(false);
-    setIsCorrect(false);
-    setIsTimerPaused(false);
-    focusInput();
-  };
+    setIsCorrect(null);
+  }, [currentIndex, finished, totalQuestions]);
 
-  const handleRestart = () => {
-    try {
-      const rawQuestions = createQuestionSet(config) as unknown;
-      const safeQuestions = Array.isArray(rawQuestions)
-        ? (rawQuestions as RawQuestion[])
-        : [];
-
-      setQuestions(safeQuestions);
-      setCurrentIndex(0);
-      setInputValue("");
-      setScore(0);
-      setChecked(false);
-      setIsCorrect(false);
-      setTimeLeft(config.time);
-      setIsFinished(false);
-      setLoadError(safeQuestions.length === 0 ? "問題が0件でした" : "");
-      setIsTimerPaused(false);
-      savedRef.current = false;
-      focusInput();
-    } catch (error) {
-      console.error(error);
-      setQuestions([]);
-      setLoadError("問題の読み込みに失敗しました");
-    }
-  };
-
-  const handleEnterSubmit = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      handleCheck();
-    }
-  };
-
-  const renderQuestionBody = () => {
-    if (loadError) {
-      return (
-        <div className="mx-auto w-full max-w-md rounded-3xl bg-rose-50 p-6 text-center ring-1 ring-rose-100">
-          <div className="text-lg font-bold text-rose-700">{loadError}</div>
-        </div>
-      );
+  const handlePrimaryAction = useCallback(() => {
+    if (checked) {
+      goNext();
+      return;
     }
 
+    submitAnswer();
+  }, [checked, goNext, submitAnswer]);
+
+  const appendDigit = useCallback(
+    (digit: string) => {
+      if (checked || finished) return;
+      setInputValue((prev) => `${prev}${digit}`);
+    },
+    [checked, finished]
+  );
+
+  const backspace = useCallback(() => {
+    if (checked || finished) return;
+    setInputValue((prev) => prev.slice(0, -1));
+  }, [checked, finished]);
+
+  const clearInput = useCallback(() => {
+    if (checked || finished) return;
+    setInputValue("");
+  }, [checked, finished]);
+
+  const renderQuestionBody = useCallback(() => {
     if (!currentQuestion) {
       return (
-        <div className="mx-auto w-full max-w-md rounded-3xl bg-amber-50 p-6 text-center ring-1 ring-amber-100">
-          <div className="text-lg font-bold text-amber-700">問題を準備中です</div>
+        <div className="rounded-3xl bg-amber-50 px-6 py-8 text-center text-amber-900">
+          問題を読み込めませんでした。
         </div>
       );
     }
 
-    if (!currentView) {
-      return (
-        <div className="mx-auto w-full max-w-md rounded-3xl bg-amber-50 p-6 text-center ring-1 ring-amber-100">
-          <div className="text-lg font-bold text-amber-700">問題データを確認中です</div>
-        </div>
-      );
+    switch (currentQuestion.layout) {
+      case "sum":
+        return (
+          <div className="mx-auto max-w-md rounded-3xl bg-slate-50 p-6 shadow-inner ring-1 ring-slate-200">
+            <div className="mb-4 text-center text-sm font-semibold text-slate-500">
+              {config.typeLabel}
+            </div>
+            <div className="space-y-2 font-mono text-right text-4xl font-bold tracking-widest text-slate-900 sm:text-5xl">
+              {currentQuestion.lines.map((line, index) => (
+                <div key={`${line}-${index}`}>{line}</div>
+              ))}
+            </div>
+          </div>
+        );
+
+      case "multiply":
+        return (
+          <div className="mx-auto max-w-md rounded-3xl bg-slate-50 p-8 text-center shadow-inner ring-1 ring-slate-200">
+            <div className="mb-4 text-sm font-semibold text-slate-500">
+              かけ算
+            </div>
+            <div className="font-mono text-4xl font-bold tracking-wide text-slate-900 sm:text-5xl">
+              {currentQuestion.left} × {currentQuestion.right}
+            </div>
+          </div>
+        );
+
+      case "divide":
+        return (
+          <div className="mx-auto max-w-md rounded-3xl bg-slate-50 p-8 text-center shadow-inner ring-1 ring-slate-200">
+            <div className="mb-4 text-sm font-semibold text-slate-500">
+              わり算
+            </div>
+            <div className="font-mono text-4xl font-bold tracking-wide text-slate-900 sm:text-5xl">
+              {currentQuestion.dividend} ÷ {currentQuestion.divisor}
+            </div>
+          </div>
+        );
+
+      default:
+        return (
+          <div className="rounded-3xl bg-red-50 px-6 py-8 text-center text-red-900">
+            未対応の問題形式です。
+          </div>
+        );
     }
+  }, [config.typeLabel, currentQuestion]);
 
-    if (currentView.kind === "sum") {
-      return (
-        <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 ring-1 ring-slate-200">
-          <div className="mb-3 text-center text-sm font-bold text-slate-500">
-            {config.typeLabel}
-          </div>
-          <div className="space-y-2 text-right font-mono text-4xl font-bold tracking-wide text-slate-900">
-            {currentView.lines.map((line, index) => (
-              <div key={`${line}-${index}`}>
-                {index === 0 ? "" : "+"}
-                {line}
-              </div>
-            ))}
-          </div>
-        </div>
-      );
-    }
-
-    if (currentView.kind === "multiply") {
-      return (
-        <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 text-center ring-1 ring-slate-200">
-          <div className="mb-3 text-center text-sm font-bold text-slate-500">
-            {config.typeLabel}
-          </div>
-          <div className="font-mono text-4xl font-bold tracking-wide text-slate-900">
-            {currentView.left} × {currentView.right}
-          </div>
-          <div className="mt-4 text-center text-lg font-bold text-slate-500">
-            答えを書こう
-          </div>
-        </div>
-      );
-    }
-
-    if (currentView.kind === "divide") {
-      return (
-        <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 text-center ring-1 ring-slate-200">
-          <div className="mb-3 text-center text-sm font-bold text-slate-500">
-            {config.typeLabel}
-          </div>
-          <div className="font-mono text-4xl font-bold tracking-wide text-slate-900">
-            {currentView.dividend} ÷ {currentView.divisor}
-          </div>
-          <div className="mt-4 text-center text-lg font-bold text-slate-500">
-            答えを書こう
-          </div>
-        </div>
-      );
-    }
-
-    if (currentView.kind === "text") {
-      return (
-        <div className="mx-auto w-full max-w-sm rounded-3xl bg-slate-50 p-6 text-center ring-1 ring-slate-200">
-          <div className="mb-3 text-sm font-bold text-slate-500">{config.typeLabel}</div>
-          <div className="font-mono text-4xl font-bold tracking-wide text-slate-900 whitespace-pre-line">
-            {currentView.text}
-          </div>
-        </div>
-      );
-    }
-
-    return (
-      <div className="mx-auto w-full max-w-md rounded-3xl bg-amber-50 p-6 text-center ring-1 ring-amber-100">
-        <div className="mb-2 text-sm font-bold text-amber-700">{config.typeLabel}</div>
-        <div className="text-lg font-bold text-amber-800">
-          この問題形式は未対応です
-        </div>
-        <pre className="mt-4 overflow-auto rounded-2xl bg-white p-4 text-left text-xs text-slate-600 ring-1 ring-slate-200">
-{JSON.stringify(currentQuestion, null, 2)}
-        </pre>
-      </div>
-    );
-  };
-
-  if (isFinished) {
-    const totalCount = questions.length || config.count;
-    const percentage =
-      totalCount > 0 ? Math.round((score / totalCount) * 100) : 0;
-
+  if (finished) {
     return (
       <main className="min-h-screen bg-gradient-to-b from-orange-50 to-white px-4 py-6 text-slate-800 sm:px-6 sm:py-8">
-        <div className="mx-auto max-w-4xl">
-          <div className="rounded-[2rem] bg-white p-6 shadow-sm ring-1 ring-slate-200 sm:p-8">
-            <div className="text-center">
-              <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-orange-100 text-4xl">
-                🎉
-              </div>
-              <h1 className="text-3xl font-extrabold text-slate-900 sm:text-4xl">
-                練習おわり
-              </h1>
-              <p className="mt-3 text-base text-slate-600 sm:text-lg">
-                {config.levelLabel} / {config.typeLabel}
-              </p>
-              <p className="mt-1 text-sm text-slate-500">{conditionText}</p>
-            </div>
+        <div className="mx-auto max-w-4xl space-y-6">
+          <section className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200 sm:p-8">
+            <p className="text-sm font-semibold text-orange-600">練習結果</p>
+            <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-900">
+              {config.levelLabel} / {config.typeLabel}
+            </h1>
 
-            <div className="mt-8 grid gap-4 sm:grid-cols-3">
-              <div className="rounded-3xl bg-orange-50 p-5 text-center ring-1 ring-orange-100">
-                <div className="text-sm font-bold text-orange-700">正解</div>
-                <div className="mt-2 text-3xl font-extrabold text-orange-600">
-                  {score} / {totalCount}
+            <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-2xl bg-slate-50 p-5">
+                <div className="text-sm text-slate-500">正解数</div>
+                <div className="mt-2 text-3xl font-bold text-slate-900">
+                  {score}
                 </div>
               </div>
 
-              <div className="rounded-3xl bg-emerald-50 p-5 text-center ring-1 ring-emerald-100">
-                <div className="text-sm font-bold text-emerald-700">正答率</div>
-                <div className="mt-2 text-3xl font-extrabold text-emerald-600">
-                  {percentage}%
+              <div className="rounded-2xl bg-slate-50 p-5">
+                <div className="text-sm text-slate-500">解答数</div>
+                <div className="mt-2 text-3xl font-bold text-slate-900">
+                  {answeredCount}
                 </div>
               </div>
 
-              <div className="rounded-3xl bg-sky-50 p-5 text-center ring-1 ring-sky-100">
-                <div className="text-sm font-bold text-sky-700">残り時間</div>
-                <div className="mt-2 text-3xl font-extrabold text-sky-600">
+              <div className="rounded-2xl bg-slate-50 p-5">
+                <div className="text-sm text-slate-500">正答率</div>
+                <div className="mt-2 text-3xl font-bold text-slate-900">
+                  {accuracy}%
+                </div>
+              </div>
+
+              <div className="rounded-2xl bg-slate-50 p-5">
+                <div className="text-sm text-slate-500">残り時間</div>
+                <div className="mt-2 text-3xl font-bold text-slate-900">
                   {formatTime(timeLeft)}
                 </div>
               </div>
             </div>
 
-            <div className="mt-8 grid gap-3 sm:grid-cols-3">
+            <div className="mt-6 rounded-2xl bg-slate-50 p-5 text-sm leading-7 text-slate-700">
+              <div>出題数: {totalQuestions}問</div>
+              <div>制限時間: {formatTime(config.timeSec)}</div>
+              <div>
+                公式準拠判定:{" "}
+                {config.strictOfficialForType ? "この種目は基準どおり" : "近似実装あり"}
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row">
               <button
-                onClick={handleRestart}
-                className="rounded-2xl bg-orange-500 px-5 py-4 text-lg font-bold text-white shadow-sm transition hover:bg-orange-600"
+                type="button"
+                onClick={initializeSession}
+                className="inline-flex items-center justify-center rounded-2xl bg-orange-500 px-5 py-4 text-base font-bold text-white transition hover:bg-orange-600"
               >
-                もう一回やる
+                同じ設定で再挑戦
               </button>
 
               <Link
-                href="/history"
-                className="rounded-2xl border border-slate-200 bg-white px-5 py-4 text-center text-lg font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                href="/settings"
+                className="inline-flex items-center justify-center rounded-2xl border border-slate-200 px-5 py-4 text-base font-semibold text-slate-700 transition hover:bg-slate-50"
               >
-                練習記録を見る
+                設定に戻る
               </Link>
 
               <Link
-                href="/settings"
-                className="rounded-2xl border border-slate-200 bg-white px-5 py-4 text-center text-lg font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                href="/history"
+                className="inline-flex items-center justify-center rounded-2xl border border-slate-200 px-5 py-4 text-base font-semibold text-slate-700 transition hover:bg-slate-50"
               >
-                設定にもどる
+                履歴を見る
               </Link>
             </div>
-          </div>
+          </section>
         </div>
       </main>
     );
@@ -600,186 +433,282 @@ export default function PracticeClientPage() {
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-orange-50 to-white px-4 py-6 text-slate-800 sm:px-6 sm:py-8">
-      <div className="mx-auto max-w-5xl">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <Link
-            href="/settings"
-            className="inline-flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-50"
-          >
-            ← 設定にもどる
-          </Link>
-
-          <div className="rounded-2xl bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm ring-1 ring-slate-200">
-            のこり時間:{" "}
-            <span className="text-lg text-orange-600">{formatTime(timeLeft)}</span>
-          </div>
-        </div>
-
-        <div className="rounded-[2rem] bg-white p-5 shadow-sm ring-1 ring-slate-200 sm:p-8">
-          <div className="text-center">
-            <h1 className="text-2xl font-extrabold text-slate-900 sm:text-4xl">
-              {config.levelLabel} / {config.typeLabel}
-            </h1>
-            <p className="mt-2 text-sm font-bold text-slate-500 sm:text-base">
-              {conditionText}
-            </p>
-            <p className="mt-4 text-base font-bold text-slate-700 sm:text-lg">
-              第{Math.min(currentIndex + 1, Math.max(questions.length, 1))}問 / 全{questions.length || config.count}問
-            </p>
-          </div>
-
-          <div className="mt-4 h-4 overflow-hidden rounded-full bg-slate-100">
-            <div
-              className="h-full rounded-full bg-orange-400 transition-all"
-              style={{
-                width: `${
-                  questions.length > 0
-                    ? ((currentIndex + 1) / questions.length) * 100
-                    : 0
-                }%`,
-              }}
-            />
-          </div>
-
-          <div className="mt-8">{renderQuestionBody()}</div>
-
-          <div className="mt-8 rounded-3xl bg-slate-50 p-4 ring-1 ring-slate-200 sm:p-6">
-            <div className="mx-auto max-w-md">
-              <label
-                htmlFor="answer"
-                className="mb-2 block text-center text-sm font-bold text-slate-600"
-              >
-                答え
-              </label>
-
-              <input
-                ref={inputRef}
-                id="answer"
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                value={inputValue}
-                onChange={(e) => {
-                  const nextValue = e.target.value.replace(/[^0-9]/g, "");
-                  setInputValue(nextValue);
-                  if (nextValue !== "") {
-                    setIsTimerPaused(true);
-                  }
-                }}
-                onKeyDown={handleEnterSubmit}
-                className="w-full rounded-2xl border-2 border-orange-200 bg-white px-5 py-4 text-center text-3xl font-bold tracking-widest text-slate-900 outline-none transition focus:border-orange-400"
-                placeholder="ここに答え"
-                disabled={!currentView || currentView.kind === "unknown"}
-              />
+      <div className="mx-auto max-w-5xl space-y-6">
+        <section className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200 sm:p-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-orange-600">練習中</p>
+              <h1 className="mt-2 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
+                {config.levelLabel} / {config.typeLabel}
+              </h1>
+              <p className="mt-2 text-sm leading-7 text-slate-600">
+                全珠連基準をベースにした練習設定です。
+                回答を確定するとタイマーは止まり、次の問題に進むと再開します。
+              </p>
             </div>
 
-            <div className="mx-auto mt-6 max-w-md">
-              <div className="grid grid-cols-3 gap-3">
-                {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((digit) => (
-                  <button
-                    key={digit}
-                    type="button"
-                    onClick={() => appendDigit(digit)}
-                    className="rounded-2xl bg-white px-4 py-4 text-2xl font-extrabold text-slate-800 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
-                  >
-                    {digit}
-                  </button>
-                ))}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                <div className="text-xs font-semibold text-slate-500">問題</div>
+                <div className="mt-1 text-lg font-bold text-slate-900">
+                  {Math.min(currentIndex + 1, Math.max(totalQuestions, 1))}/{Math.max(totalQuestions, 1)}
+                </div>
+              </div>
 
-                <button
-                  type="button"
-                  onClick={clearInput}
-                  className="rounded-2xl bg-rose-50 px-4 py-4 text-lg font-bold text-rose-600 ring-1 ring-rose-100 transition hover:bg-rose-100"
-                >
-                  けす
-                </button>
+              <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                <div className="text-xs font-semibold text-slate-500">正解</div>
+                <div className="mt-1 text-lg font-bold text-slate-900">{score}</div>
+              </div>
 
-                <button
-                  type="button"
-                  onClick={() => appendDigit("0")}
-                  className="rounded-2xl bg-white px-4 py-4 text-2xl font-extrabold text-slate-800 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
-                >
-                  0
-                </button>
+              <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                <div className="text-xs font-semibold text-slate-500">解答</div>
+                <div className="mt-1 text-lg font-bold text-slate-900">
+                  {answeredCount}
+                </div>
+              </div>
 
-                <button
-                  type="button"
-                  onClick={backspaceInput}
-                  className="rounded-2xl bg-sky-50 px-4 py-4 text-lg font-bold text-sky-600 ring-1 ring-sky-100 transition hover:bg-sky-100"
-                >
-                  1字けす
-                </button>
+              <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                <div className="text-xs font-semibold text-slate-500">残り時間</div>
+                <div className="mt-1 text-lg font-bold text-slate-900">
+                  {formatTime(timeLeft)}
+                </div>
               </div>
             </div>
+          </div>
 
-            <div className="mx-auto mt-6 max-w-md">
-              {!checked ? (
-                <button
-                  type="button"
-                  onClick={handleCheck}
-                  disabled={!currentView || currentView.kind === "unknown"}
-                  className="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-xl font-extrabold text-white shadow-sm transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300"
-                >
-                  答えあわせ
-                </button>
+          {config.adjustedTypeFromRequest && (
+            <div className="mt-4 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              この級・段では選べない種目だったため、
+              「{config.typeLabel}」に切り替えて表示しています。
+            </div>
+          )}
+
+          {config.type === "anzan" && !config.strictOfficialForType && (
+            <div className="mt-4 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              暗算は資料に級別細目がないため、現在のアプリでは見取り暗算形式の近似練習です。
+            </div>
+          )}
+
+          {availableTypes.length > 0 && (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {availableTypes.map((type) => {
+                const href = buildPracticeHref(config.level, type, requestedTimeSec);
+                const active = type === config.type;
+
+                return (
+                  <Link
+                    key={type}
+                    href={href}
+                    className={[
+                      "rounded-full px-4 py-2 text-sm font-semibold transition",
+                      active
+                        ? "bg-orange-500 text-white"
+                        : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-orange-50 hover:ring-orange-300",
+                    ].join(" ")}
+                  >
+                    {PRACTICE_TYPE_LABELS[type]}
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
+          <div className="space-y-6">
+            <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              {loadError ? (
+                <div className="rounded-2xl bg-red-50 px-5 py-6 text-red-900">
+                  {loadError}
+                </div>
               ) : (
-                <button
-                  type="button"
-                  onClick={handleNext}
-                  className="w-full rounded-2xl bg-orange-500 px-5 py-4 text-xl font-extrabold text-white shadow-sm transition hover:bg-orange-600"
-                >
-                  {currentIndex >= questions.length - 1 ? "結果を見る" : "次の問題へ"}
-                </button>
+                <>
+                  {renderQuestionBody()}
+
+                  <div className="mt-6 rounded-2xl bg-slate-50 p-5">
+                    <label className="text-sm font-semibold text-slate-600">
+                      回答
+                    </label>
+
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={inputValue}
+                      onChange={(e) => {
+                        if (checked) return;
+                        setInputValue(e.target.value);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handlePrimaryAction();
+                        }
+                      }}
+                      disabled={checked}
+                      placeholder="数字を入力"
+                      className="mt-3 w-full rounded-2xl border border-slate-300 px-4 py-4 text-center text-3xl font-bold tracking-widest outline-none transition focus:border-orange-500 focus:ring-4 focus:ring-orange-100 disabled:bg-slate-100 disabled:text-slate-500"
+                    />
+
+                    {checked && currentQuestion && (
+                      <div
+                        className={[
+                          "mt-4 rounded-2xl px-4 py-4 text-sm font-semibold",
+                          isCorrect
+                            ? "bg-emerald-50 text-emerald-900"
+                            : "bg-rose-50 text-rose-900",
+                        ].join(" ")}
+                      >
+                        {isCorrect ? "正解です。" : `不正解です。正しい答えは ${currentQuestion.answer} です。`}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={handlePrimaryAction}
+                      disabled={!checked && parseAnswer(inputValue) === null}
+                      className={[
+                        "inline-flex items-center justify-center rounded-2xl px-5 py-4 text-base font-bold transition",
+                        !checked && parseAnswer(inputValue) === null
+                          ? "cursor-not-allowed bg-slate-200 text-slate-500"
+                          : "bg-orange-500 text-white hover:bg-orange-600",
+                      ].join(" ")}
+                    >
+                      {checked
+                        ? currentIndex >= totalQuestions - 1
+                          ? "結果を見る"
+                          : "次の問題へ"
+                        : "答え合わせ"}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={clearInput}
+                      disabled={checked}
+                      className="inline-flex items-center justify-center rounded-2xl border border-slate-200 px-5 py-4 text-base font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                    >
+                      入力クリア
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={initializeSession}
+                      className="inline-flex items-center justify-center rounded-2xl border border-slate-200 px-5 py-4 text-base font-semibold text-slate-700 transition hover:bg-slate-50"
+                    >
+                      最初からやり直す
+                    </button>
+                  </div>
+                </>
               )}
             </div>
-
-            {checked && currentView && currentView.kind !== "unknown" && (
-              <div
-                className={`mx-auto mt-6 max-w-md rounded-3xl p-5 text-center ring-1 ${
-                  isCorrect
-                    ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
-                    : "bg-rose-50 text-rose-700 ring-rose-100"
-                }`}
-              >
-                <div className="text-2xl font-extrabold">
-                  {isCorrect ? "せいかい！" : "おしい！"}
-                </div>
-                <div className="mt-2 text-lg font-bold">
-                  正しい答え: {currentView.answer}
-                </div>
-              </div>
-            )}
-
-            {isTimerPaused && !checked && (
-              <div className="mx-auto mt-4 max-w-md rounded-2xl bg-sky-50 px-4 py-3 text-center text-sm font-bold text-sky-700 ring-1 ring-sky-100">
-                回答入力中のため時間を停止しています
-              </div>
-            )}
           </div>
 
-          <div className="mt-6 grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl bg-orange-50 p-4 text-center ring-1 ring-orange-100">
-              <div className="text-sm font-bold text-orange-700">今の正解数</div>
-              <div className="mt-1 text-2xl font-extrabold text-orange-600">
-                {score}
+          <div className="space-y-6">
+            <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              <h2 className="text-xl font-bold text-slate-900">テンキー</h2>
+
+              <div className="mt-4 grid grid-cols-3 gap-3">
+                {["7", "8", "9", "4", "5", "6", "1", "2", "3"].map((digit) => (
+                  <KeypadButton
+                    key={digit}
+                    label={digit}
+                    onClick={() => appendDigit(digit)}
+                    disabled={checked || finished}
+                  />
+                ))}
+
+                <KeypadButton
+                  label="C"
+                  onClick={clearInput}
+                  disabled={checked || finished}
+                  className="bg-amber-50 text-amber-900 ring-1 ring-amber-200 hover:bg-amber-100"
+                />
+
+                <KeypadButton
+                  label="0"
+                  onClick={() => appendDigit("0")}
+                  disabled={checked || finished}
+                />
+
+                <KeypadButton
+                  label="⌫"
+                  onClick={backspace}
+                  disabled={checked || finished}
+                  className="bg-slate-50 text-slate-900"
+                />
               </div>
+
+              <p className="mt-4 text-sm leading-7 text-slate-600">
+                手書き入力欄は表示していません。数字入力かテンキーで回答してください。
+              </p>
             </div>
 
-            <div className="rounded-2xl bg-sky-50 p-4 text-center ring-1 ring-sky-100">
-              <div className="text-sm font-bold text-sky-700">今の問題</div>
-              <div className="mt-1 text-2xl font-extrabold text-sky-600">
-                {Math.min(currentIndex + 1, Math.max(questions.length, 1))}
-              </div>
-            </div>
+            <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              <h2 className="text-xl font-bold text-slate-900">現在の設定</h2>
 
-            <div className="rounded-2xl bg-emerald-50 p-4 text-center ring-1 ring-emerald-100">
-              <div className="text-sm font-bold text-emerald-700">残り時間</div>
-              <div className="mt-1 text-2xl font-extrabold text-emerald-600">
-                {formatTime(timeLeft)}
+              <dl className="mt-4 space-y-4 text-sm">
+                <div>
+                  <dt className="font-semibold text-slate-500">級・段</dt>
+                  <dd className="mt-1 text-slate-800">{config.levelLabel}</dd>
+                </div>
+
+                <div>
+                  <dt className="font-semibold text-slate-500">種目</dt>
+                  <dd className="mt-1 text-slate-800">{config.typeLabel}</dd>
+                </div>
+
+                <div>
+                  <dt className="font-semibold text-slate-500">問題数</dt>
+                  <dd className="mt-1 text-slate-800">{config.questionCount}問</dd>
+                </div>
+
+                <div>
+                  <dt className="font-semibold text-slate-500">制限時間</dt>
+                  <dd className="mt-1 text-slate-800">{formatTime(config.timeSec)}</dd>
+                </div>
+
+                <div>
+                  <dt className="font-semibold text-slate-500">公式準拠</dt>
+                  <dd className="mt-1 text-slate-800">
+                    {config.strictOfficialForType ? "はい" : "一部近似あり"}
+                  </dd>
+                </div>
+              </dl>
+
+              <ul className="mt-5 space-y-2 text-sm leading-7 text-slate-700">
+                {config.notes.map((note, index) => (
+                  <li key={`${note}-${index}`} className="rounded-2xl bg-slate-50 px-4 py-3">
+                    {note}
+                  </li>
+                ))}
+              </ul>
+
+              <div className="mt-6 flex flex-col gap-3">
+                <Link
+                  href="/settings"
+                  className="inline-flex items-center justify-center rounded-2xl border border-slate-200 px-5 py-4 text-base font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  設定に戻る
+                </Link>
+
+                <Link
+                  href="/history"
+                  className="inline-flex items-center justify-center rounded-2xl border border-slate-200 px-5 py-4 text-base font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  履歴を見る
+                </Link>
+
+                <Link
+                  href={practiceHref}
+                  className="inline-flex items-center justify-center rounded-2xl border border-slate-200 px-5 py-4 text-base font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  URLを再読み込み
+                </Link>
               </div>
             </div>
           </div>
-        </div>
+        </section>
       </div>
     </main>
   );
